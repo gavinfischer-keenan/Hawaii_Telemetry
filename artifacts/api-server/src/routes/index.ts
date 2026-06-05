@@ -5,6 +5,8 @@ import earthquakesRouter from "./earthquakes";
 import buoysRouter from "./buoys";
 import alertsRouter from "./alerts";
 import airqualityRouter from "./airquality";
+import aircraftRouter from "./aircraft";
+import windRouter from "./wind";
 
 const router: IRouter = Router();
 
@@ -14,5 +16,7 @@ router.use(earthquakesRouter);
 router.use(buoysRouter);
 router.use(alertsRouter);
 router.use(airqualityRouter);
+router.use(aircraftRouter);
+router.use(windRouter);
 
 export default router;

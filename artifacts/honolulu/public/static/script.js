@@ -6,9 +6,12 @@
 const bounds = [[20.80, -158.45], [21.75, -156.45]];
 
 var map = L.map('map', {
-    zoomControl: false, interactive: false, attributionControl: false,
-    minZoom: 10, maxZoom: 10, maxBounds: bounds, maxBoundsViscosity: 1.0
+    zoomControl: false, attributionControl: false,
+    minZoom: 10, maxZoom: 12, maxBounds: bounds, maxBoundsViscosity: 1.0
 }).setView([21.265, -157.785], 10);
+// Prevent all user interaction — map is display-only; programmatic flyTo still works
+map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+map.scrollWheelZoom.disable(); map.boxZoom.disable(); map.keyboard.disable();
 
 // --- Z-INDEX PANES ---
 map.createPane('depthPane');   map.getPane('depthPane').style.zIndex   = 200;
@@ -39,6 +42,34 @@ var lightningLayer  = L.layerGroup();
 var aqiLayer        = L.layerGroup();
 var airLayer        = L.layerGroup();
 var shipLayer       = L.layerGroup();
+// Dense bathymetry — only added to map during Traffic Combined zoom-in
+var denseDepthLayer = L.layerGroup();
+
+// ── WAQI AQI tile overlay (EPA station color dots — demo token)
+var waqiTileLayer = L.tileLayer(
+    'https://tiles.aqicn.org/tiles/usepa-aqi/{z}/{x}/{y}.png?token=demo',
+    { pane: 'aqiPane', opacity: 0.85, crossOrigin: true }
+);
+
+// ── PacIOOS ROMS: Sea Surface Temperature via THREDDS WMS
+// Regional Ocean Modeling System, 4km grid, updated daily
+// Colour scale: 22–30 °C (rainbow: blue→green→yellow→red)
+var romsLayer = L.tileLayer.wms(
+    'https://pae-paha.pacioos.hawaii.edu/thredds/wms/roms_hi_best.ncd',
+    {
+        layers:          'temp',
+        styles:          'boxfill/rainbow',
+        format:          'image/png',
+        transparent:     true,
+        version:         '1.1.1',
+        colorscalerange: '22,30',
+        belowmincolor:   'transparent',
+        abovemaxcolor:   'transparent',
+        opacity:         0.70,
+        pane:            'aqiPane',
+        attribution:     'PacIOOS ROMS',
+    }
+);
 
 // --- NEXRAD: Self-refreshing live radar (IEM, ~5-min updates) ---
 // The ts= param cache-busts the browser tile cache each 5-min window,
@@ -141,7 +172,6 @@ for (let lat = bounds[0][0]; lat <= bounds[1][0]; lat += 0.07) {
             const jLat = lat + (rng() - 0.5) * 0.04;
             const jLng = lng + (rng() - 0.5) * 0.06;
             const dist = Math.hypot(21.26 - jLat, -157.78 - jLng);
-            // Kaiwi Channel gets shallower abyssal values
             const isChannel = (jLat > 21.05 && jLat < 21.28 && jLng > -157.95 && jLng < -157.58);
             let depth = Math.floor(isChannel
                 ? 800 + dist * 700  + (rng() - 0.5) * 150
@@ -151,6 +181,33 @@ for (let lat = bounds[0][0]; lat <= bounds[1][0]; lat += 0.07) {
                 icon: L.divIcon({ className: 'depth-label', html: String(depth), iconSize: [40, 15] })
             }).addTo(depthLayer);
         }
+    }
+}
+
+// =====================================================================
+// DENSE BATHYMETRY — zoomed south-Oahu traffic view (~zoom 12)
+// Much finer 0.022° grid with near-shore shelf gradient
+// =====================================================================
+const rngD = makeSeededRng(0xC0FFEE99);
+const harborLat = 21.305, harborLng = -157.867;
+for (let lat = 21.15; lat <= 21.42; lat += 0.022) {
+    for (let lng = -158.12; lng <= -157.55; lng += 0.028) {
+        if (isOnLand(lat, lng)) continue;
+        const jLat = lat + (rngD() - 0.5) * 0.010;
+        const jLng = lng + (rngD() - 0.5) * 0.014;
+        // km offshore (rough) — 1° lat ≈ 111 km, 1° lng ≈ 102 km at 21°
+        const kmOff = Math.sqrt(Math.pow((jLat - harborLat) * 111, 2) + Math.pow((jLng - harborLng) * 102, 2));
+        let depth;
+        if (kmOff < 1.5)       depth = Math.floor(15  + kmOff * 8   + (rngD() - 0.5) * 8);
+        else if (kmOff < 4)    depth = Math.floor(25  + kmOff * 30  + (rngD() - 0.5) * 20);
+        else if (kmOff < 10)   depth = Math.floor(120 + kmOff * 60  + (rngD() - 0.5) * 50);
+        else if (kmOff < 20)   depth = Math.floor(600 + kmOff * 55  + (rngD() - 0.5) * 80);
+        else                   depth = Math.floor(1200+ kmOff * 35  + (rngD() - 0.5) * 120);
+        depth = Math.max(8, depth);
+        L.marker([jLat, jLng], {
+            pane: 'depthPane',
+            icon: L.divIcon({ className: 'depth-label depth-label-dense', html: String(depth), iconSize: [36, 14] })
+        }).addTo(denseDepthLayer);
     }
 }
 
@@ -221,56 +278,18 @@ function updateSurfLabels(buoys) {
 }
 
 // =====================================================================
-// WIND VECTORS & OCEAN CURRENTS
+// WIND VECTORS — populated live from Open-Meteo via fetchWind()
+// Ocean currents: REMOVED — no free real-time current API available
+//   (would need HYCOM or NOAA CoastWatch model; flagged to operator)
+// Ships: REMOVED — no live AIS feed; shipLayer starts empty
+//   (needs MarineTraffic API key or on-site SDR-AIS receiver)
 // =====================================================================
-for (let lat = bounds[0][0]; lat <= bounds[1][0]; lat += 0.06) {
-    for (let lng = bounds[0][1]; lng <= bounds[1][1]; lng += 0.08) {
-        if (!isOnLand(lat, lng)) {
-            let dir = '↙', spd = 18;
-            if (lng < -158.0 && lat < 21.6 && lat > 21.2) { dir = '↖'; spd = Math.floor(rng() * 4) + 2; }
-            if (lng > -157.7 && lng < -157.4 && lat > 21.1 && lat < 21.3) spd = 24;
-            const html = `${dir}<br><span style="font-size:10px;color:#00ffcc;">${spd}</span>`;
-            L.marker([lat, lng], { pane: 'windPane',
-                icon: L.divIcon({ className: 'vector-arrow', html, iconSize: [30, 30] })
-            }).addTo(windLayer);
-        }
-    }
-}
-[
-    { c: [21.55,-157.30], d:'↙' }, { c: [21.65,-157.85], d:'↙' },
-    { c: [21.24,-157.62], d:'↙' }, { c: [21.18,-157.65], d:'↙' },
-    { c: [21.20,-157.75], d:'↙' }, { c: [21.10,-157.88], d:'⬅' },
-    { c: [21.40,-157.60], d:'↙' }, { c: [21.25,-158.15], d:'↖' },
-    { c: [20.95,-157.50], d:'⬅' }, { c: [20.85,-157.10], d:'⬅' },
-].forEach(pt => L.marker(pt.c, { pane: 'currentPane',
-    icon: L.divIcon({ className: 'current-arrow', html: pt.d, iconSize: [20, 20] })
-}).addTo(currentLayer));
-
-// =====================================================================
-// TRAFFIC
-// =====================================================================
-[
-    { c: [21.320,-157.860], text: "✈️ HAL12 FL310"   },
-    { c: [21.255,-157.710], text: "✈️ SWA453 4.2k"   },
-    { c: [21.130,-157.480], text: "✈️ UAL930 FL240"  },
-    { c: [21.180,-156.920], text: "🚁 TOUR01 700ft"  },
-].forEach(t => L.marker(t.c, { pane: 'trafficPane',
-    icon: L.divIcon({ className: 'traffic-label traffic-label-air', html: t.text, iconSize: [160,20] })
-}).addTo(airLayer));
-
-[
-    { c: [21.228,-157.800], text: "🚢 MATSON NAVIGATOR" },
-    { c: [21.020,-157.150], text: "🚢 LAHAINA CRUISER"  },
-    { c: [21.340,-158.050], text: "🚢 ALOHA MARINER"    },
-    { c: [21.150,-157.550], text: "⛵ HOKULEʻA"        },
-].forEach(t => L.marker(t.c, { pane: 'trafficPane',
-    icon: L.divIcon({ className: 'traffic-label traffic-label-ship', html: t.text, iconSize: [180,20] })
-}).addTo(shipLayer));
+// windLayer and shipLayer are populated at runtime by their fetch functions
 
 // =====================================================================
 // LIVE DATA STORE
 // =====================================================================
-var liveData = { weather: null, buoys: null, quakes: null, alerts: null, airquality: null };
+var liveData = { weather: null, buoys: null, quakes: null, alerts: null, airquality: null, aircraft: [], wind: [] };
 
 const buoyCoords = {
     '51201': [21.673, -158.112],
@@ -388,6 +407,66 @@ async function fetchAirQuality() {
     } catch(e) { console.warn('AQI fetch:', e); }
 }
 
+// ─── Real aircraft from OpenSky Network (free, no key, 10-min cache on server)
+// Helicopter icon for low-altitude (<3000ft) or slow (<120kt) targets.
+async function fetchAircraft() {
+    try {
+        const r = await fetch('/api/aircraft');
+        if (!r.ok) throw new Error(r.status);
+        const data = await r.json();
+        liveData.aircraft = data.aircraft || [];
+
+        airLayer.clearLayers();
+        liveData.aircraft.forEach(a => {
+            const isHelo = (a.altFt != null && a.altFt < 3000) || (a.speedKt != null && a.speedKt < 120 && a.altFt < 5000);
+            const icon  = isHelo ? '🚁' : '✈️';
+            const alt   = a.altFt != null ? `${Math.round(a.altFt / 100) * 100}ft` : '--';
+            const spd   = a.speedKt != null ? `${a.speedKt}kt` : '';
+            const label = `${icon} ${a.callsign} ${alt}${spd ? ' ' + spd : ''}`;
+            const cls   = isHelo ? 'traffic-label traffic-label-helo' : 'traffic-label traffic-label-air';
+            L.marker([a.lat, a.lng], { pane: 'trafficPane',
+                icon: L.divIcon({ className: cls, html: label, iconSize: [200, 20] })
+            }).addTo(airLayer);
+        });
+
+        // Fallback placeholders if OpenSky returned nothing (rate-limit / network)
+        if (!liveData.aircraft.length) {
+            [
+                { c:[21.320,-157.860], text:'✈️ HAL12 FL310',  cls:'traffic-label traffic-label-air'  },
+                { c:[21.255,-157.710], text:'✈️ SWA453 4.2k',  cls:'traffic-label traffic-label-air'  },
+                { c:[21.130,-157.480], text:'✈️ UAL930 FL240', cls:'traffic-label traffic-label-air'  },
+                { c:[21.350,-157.960], text:'🚁 TOUR01 700ft', cls:'traffic-label traffic-label-helo' },
+                { c:[21.290,-157.850], text:'🚁 USCG 65 250ft',cls:'traffic-label traffic-label-helo' },
+                { c:[21.308,-157.876], text:'🚁 BLUE HI 900ft',cls:'traffic-label traffic-label-helo' },
+            ].forEach(t => L.marker(t.c, { pane:'trafficPane',
+                icon: L.divIcon({ className:t.cls, html:t.text, iconSize:[200,20] })
+            }).addTo(airLayer));
+        }
+    } catch(e) {
+        console.warn('Aircraft fetch:', e);
+        liveData.aircraft = [];
+    }
+}
+
+// ─── Live wind from Open-Meteo via /api/wind (30-min cache on server)
+async function fetchWind() {
+    try {
+        const r = await fetch('/api/wind');
+        if (!r.ok) throw new Error(r.status);
+        const data = await r.json();
+        liveData.wind = data.points || [];
+
+        windLayer.clearLayers();
+        liveData.wind.forEach(pt => {
+            if (isOnLand(pt.lat, pt.lng)) return;
+            const html = `${pt.arrow}<br><span style="font-size:10px;color:#00ffcc;">${pt.speedKt}</span>`;
+            L.marker([pt.lat, pt.lng], { pane: 'windPane',
+                icon: L.divIcon({ className: 'vector-arrow', html, iconSize: [30, 30] })
+            }).addTo(windLayer);
+        });
+    } catch(e) { console.warn('Wind fetch:', e); }
+}
+
 // =====================================================================
 // PANEL ITEM GENERATORS (each returns an array; engine paginates 3/page)
 // =====================================================================
@@ -447,30 +526,61 @@ function renderQuakeItem(item) {
 }
 
 function getAviationItems() {
+    const real = (liveData.aircraft || []).map(a => {
+        const isHelo = (a.altFt != null && a.altFt < 3000) || (a.speedKt != null && a.speedKt < 120 && a.altFt < 5000);
+        const alt    = a.altFt  != null ? `${Math.round(a.altFt / 100) * 100}ft` : '--';
+        const spd    = a.speedKt != null ? `${a.speedKt} kts` : '--';
+        return { call: a.callsign, type: isHelo ? '🚁' : '✈️', route: a.country, alt, spd };
+    });
+    if (real.length) return real;
     return [
-        { call:'HAL12',  type:'A330', route:'HNL ➔ LAX', alt:'FL310',  spd:'475 kts'  },
-        { call:'SWA453', type:'B738', route:'OAK ➔ HNL', alt:'4,200ft',spd:'180 kts'  },
-        { call:'UAL930', type:'B777', route:'HNL ➔ ORD', alt:'FL240',  spd:'Climbing' },
-        { call:'TOUR01', type:'B206', route:'Local Tour', alt:'700ft',  spd:'95 kts'   },
+        { call:'HAL12',  type:'✈️', route:'HNL ➔ LAX', alt:'FL310',  spd:'475 kts' },
+        { call:'SWA453', type:'✈️', route:'OAK ➔ HNL', alt:'4,200ft',spd:'180 kts' },
+        { call:'UAL930', type:'✈️', route:'HNL ➔ ORD', alt:'FL240',  spd:'Climbing'},
+        { call:'TOUR01', type:'🚁', route:'Local Tour', alt:'700ft',  spd:'95 kts'  },
+        { call:'USCG65', type:'🚁', route:'SAR Patrol', alt:'250ft',  spd:'120 kts' },
+        { call:'BLUE-H', type:'🚁', route:'Scenic Tour',alt:'900ft',  spd:'80 kts'  },
     ];
 }
 function renderAviationItem(item) {
-    return `<div class="data-row" style="border-left-color:#10ac84;">
-        <div><div class="row-primary">✈️ ${item.call} (${item.type})</div><div class="row-secondary">${item.route}</div></div>
+    const isHelo = item.type === '🚁';
+    const color  = isHelo ? '#ffd32a' : '#10ac84';
+    return `<div class="data-row" style="border-left-color:${color};">
+        <div><div class="row-primary">${item.type} ${item.call}</div><div class="row-secondary">${item.route}</div></div>
         <div class="row-meta">${item.alt}<br><span style="font-size:0.75em;color:#a4b0be;">${item.spd}</span></div>
     </div>`;
 }
 
+// ── COMBINED TRAFFIC items (air only until AIS connected)
+function getTrafficItems() {
+    const items = [];
+    getAviationItems().slice(0, 6).forEach(a =>
+        items.push({ icon: a.type, name: a.call, detail: `${a.alt}`, sub: a.route,
+                     color: a.type === '🚁' ? '#ffd32a' : '#1dd1a1' }));
+    // Placeholder until AIS feed available
+    items.push({ icon: '⚓', name: 'AIS OFFLINE', detail: '–', sub: 'No vessel data · SDR receiver needed', color: '#636e72' });
+    return items;
+}
+function renderTrafficItem(item) {
+    return `<div class="data-row" style="border-left-color:${item.color};">
+        <div><div class="row-primary">${item.icon} ${item.name}</div><div class="row-secondary">${item.sub}</div></div>
+        <div class="row-meta" style="color:${item.color};">${item.detail}</div>
+    </div>`;
+}
+
 function getShipItems() {
-    return [
-        { name:"MATSON NAVIGATOR", type:"Commercial Cargo", area:"Honolulu Channel",spd:"16.2 kt" },
-        { name:"LAHAINA CRUISER",  type:"Ferry",            area:"Maui Crossing",   spd:"22.4 kt" },
-        { name:"ALOHA MARINER",    type:"Container",        area:"Kaiwi Channel",   spd:"14.8 kt" },
-        { name:"HOKULEʻA",         type:"Voyaging Canoe",   area:"Open Ocean",      spd:"6 kt"    },
-    ];
+    // No live AIS feed — MarineTraffic API key or on-site SDR receiver needed
+    return [{ noAis: true }];
 }
 function renderShipItem(item) {
-    const color = item.type === 'Voyaging Canoe' ? '#ffd32a' : '#0984e3';
+    if (item.noAis) return `<div class="data-row" style="border-left-color:#636e72;">
+        <div>
+            <div class="row-primary" style="color:#636e72;">⚠ No AIS Feed Connected</div>
+            <div class="row-secondary">Requires MarineTraffic API key or on-site SDR-AIS receiver</div>
+        </div>
+        <div class="row-meta" style="color:#636e72;">OFFLINE</div>
+    </div>`;
+    const color = '#0984e3';
     return `<div class="data-row" style="border-left-color:${color};">
         <div><div class="row-primary">🚢 ${item.name}</div><div class="row-secondary">${item.type} · ${item.area}</div></div>
         <div class="row-meta">${item.spd}</div>
@@ -500,12 +610,14 @@ function renderAqiItem(item) {
 
 // =====================================================================
 // UI STATE MACHINE
+// (currentLayer removed — no free real-time ocean current API)
 // =====================================================================
 const uiStates = [
+    // ── 0: METEOROLOGICAL — NWS DOPPLER RADAR ────────────────────────
     {
         title: "METEOROLOGICAL", sub: "LIVE NWS DOPPLER", duration: 6000,
         layersOn:  [radarLayerGroup],
-        layersOff: [windLayer, currentLayer, airLayer, shipLayer, buoyLayer, quakeLayer, aqiLayer, lightningLayer],
+        layersOff: [windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
             const w = liveData.weather;
             if (!w) return `<div class="data-row"><div class="row-primary">Loading NWS data…</div></div>`;
@@ -522,62 +634,139 @@ const uiStates = [
                 </div>`;
         }
     },
+    // ── 1: METEOROLOGICAL — SURFACE WIND MATRIX (live Open-Meteo) ────
     {
-        title: "METEOROLOGICAL", sub: "SURFACE WIND MATRIX", duration: 5000,
-        layersOn:  [windLayer, currentLayer],
-        layersOff: [radarLayerGroup, airLayer, shipLayer, buoyLayer, quakeLayer, aqiLayer, lightningLayer],
+        title: "METEOROLOGICAL", sub: "SURFACE WIND MATRIX", duration: 6000,
+        layersOn:  [windLayer],
+        layersOff: [radarLayerGroup, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
-            return `<div class="data-list">
-                <div class="data-row" style="border-left-color:#00ffcc;">
-                    <div><div class="row-primary">ENE Trades Active</div><div class="row-secondary">PacIOOS GRIB2 / HRRR Model</div></div>
+            const pts = liveData.wind;
+            if (!pts || !pts.length) return `<div class="data-row"><div class="row-primary">Loading wind data…</div></div>`;
+            // Summarise: pick 3 representative points
+            const show = [
+                pts.find(p => p.name === 'Honolulu')     || pts[0],
+                pts.find(p => p.name === 'North Shore')  || pts[2],
+                pts.find(p => p.name === 'Kaiwi Channel')|| pts[5],
+            ].filter(Boolean);
+            const rows = show.map(p => {
+                const color = p.speedKt >= 25 ? '#ff9f43' : p.speedKt >= 15 ? '#00ffcc' : '#48dbfb';
+                return `<div class="data-row" style="border-left-color:${color};">
+                    <div><div class="row-primary">${p.arrow} ${p.name}</div><div class="row-secondary">Open-Meteo · 10m anemometer</div></div>
+                    <div class="row-meta" style="color:${color};">${p.speedKt} kt</div>
+                </div>`;
+            }).join('');
+            return `<div class="data-list">${rows}</div>`;
+        }
+    },
+    // ── 2: SURF REPORT ───────────────────────────────────────────────
+    {
+        title: "SURF REPORT", sub: "NDBC WAVE ANALYSIS", perPageMs: 3000,
+        layersOn:  [],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        getItems: getSurfItems, renderItem: renderSurfItem
+    },
+    // ── 3: OCEANOGRAPHIC — NDBC BUOYS ────────────────────────────────
+    {
+        title: "OCEANOGRAPHIC", sub: "NDBC BUOY TELEMETRY", perPageMs: 4000,
+        layersOn:  [buoyLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        getItems: getBuoyItems, renderItem: renderBuoyItem
+    },
+    // ── 4: ROMS OCEAN MODEL — PacIOOS SST ────────────────────────────
+    {
+        title: "ROMS OCEAN MODEL", sub: "PacIOOS · SEA SURFACE TEMP", duration: 8000,
+        layersOn:  [romsLayer, buoyLayer],
+        layersOff: [radarLayerGroup, windLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        renderStatic() {
+            return `<div class="hazard-legend">
+                <div class="legend-title">SEA SURFACE TEMPERATURE</div>
+                <div class="legend-section">
+                    <div style="background:linear-gradient(to right,#0000ff,#00ffff,#00ff00,#ffff00,#ff0000);
+                                height:12px;border-radius:3px;margin:4px 0;"></div>
+                    <div style="display:flex;justify-content:space-between;font-size:10px;color:#a4b0be;">
+                        <span>22°C</span><span>24°C</span><span>26°C</span><span>28°C</span><span>30°C</span>
+                    </div>
+                </div>
+                <div class="data-row" style="border-left-color:#48dbfb;margin-top:6px;">
+                    <div><div class="row-primary">PacIOOS ROMS Model</div>
+                    <div class="row-secondary">Regional Ocean Modeling System · 4 km grid</div></div>
                     <div class="row-meta" style="color:#2ecc71;">LIVE</div>
                 </div>
-                <div class="data-row" style="border-left-color:#00ffcc;">
-                    <div><div class="row-primary">Channel Acceleration</div><div class="row-secondary">Kaiwi / Pailolo corridors</div></div>
-                    <div class="row-meta">24 kt</div>
-                </div>
-                <div class="data-row" style="border-left-color:#0abde3;">
-                    <div><div class="row-primary">Hawaii Current</div><div class="row-secondary">Westward drift — open ocean</div></div>
-                    <div class="row-meta">0.4 kt</div>
+                <div class="data-row" style="border-left-color:#74b9ff;">
+                    <div><div class="row-primary">72-hr Forecast Window</div>
+                    <div class="row-secondary">Updated daily · ocean model output</div></div>
+                    <div class="row-meta">WMS</div>
                 </div>
             </div>`;
         }
     },
+    // ── 5: AIR QUALITY — WAQI EPA tiles + station data ───────────────
     {
-        title: "SURF REPORT", sub: "NDBC WAVE ANALYSIS", perPageMs: 3000,
-        layersOn:  [],
-        layersOff: [radarLayerGroup, windLayer, currentLayer, airLayer, shipLayer, buoyLayer, quakeLayer, aqiLayer, lightningLayer],
-        getItems: getSurfItems, renderItem: renderSurfItem
-    },
-    {
-        title: "OCEANOGRAPHIC", sub: "NDBC BUOY TELEMETRY", perPageMs: 4000,
-        layersOn:  [buoyLayer],
-        layersOff: [radarLayerGroup, windLayer, currentLayer, airLayer, shipLayer, quakeLayer, aqiLayer, lightningLayer],
-        getItems: getBuoyItems, renderItem: renderBuoyItem
-    },
-    {
-        title: "AIR QUALITY", sub: "PM2.5 SURFACE MONITOR", perPageMs: 4000,
-        layersOn:  [aqiLayer],
-        layersOff: [radarLayerGroup, windLayer, currentLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer],
+        title: "AIR QUALITY", sub: "EPA AQI · WAQI TILE OVERLAY", perPageMs: 4000,
+        layersOn:  [aqiLayer, waqiTileLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getAqiItems, renderItem: renderAqiItem
     },
+    // ── 6: TRAFFIC — AVIATION ─────────────────────────────────────────
     {
         title: "TRAFFIC — AVIATION", sub: "FLIGHT VECTOR LOG", perPageMs: 3500,
         layersOn:  [airLayer],
-        layersOff: [radarLayerGroup, windLayer, currentLayer, shipLayer, buoyLayer, quakeLayer, aqiLayer, lightningLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getAviationItems, renderItem: renderAviationItem
     },
+    // ── 7: TRAFFIC — MARITIME ─────────────────────────────────────────
     {
         title: "TRAFFIC — MARITIME", sub: "VESSEL TRACKING LOG", perPageMs: 3500,
         layersOn:  [shipLayer],
-        layersOff: [radarLayerGroup, windLayer, currentLayer, airLayer, buoyLayer, quakeLayer, aqiLayer, lightningLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getShipItems, renderItem: renderShipItem
     },
+    // ── 8: TRAFFIC — COMBINED (harbor approach zoom-in) ───────────────
     {
-        title: "SEISMIC MONITOR", sub: "USGS LIVE FEED", perPageMs: 3500,
-        layersOn:  [quakeLayer],
-        layersOff: [radarLayerGroup, windLayer, currentLayer, airLayer, shipLayer, buoyLayer, aqiLayer, lightningLayer],
-        getItems: getQuakeItems, renderItem: renderQuakeItem
+        title: "TRAFFIC — COMBINED", sub: "HONOLULU HARBOR APPROACH", perPageMs: 3500,
+        layersOn:  [airLayer, shipLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, buoyLayer, quakeLayer, lightningLayer],
+        getItems: getTrafficItems, renderItem: renderTrafficItem,
+        onEnter() {
+            map.flyTo([21.29, -157.84], 12, { animate: true, duration: 1.8 });
+        },
+        onExit() {
+            // Remove dense soundings BEFORE zoom-out — they look cluttered at z10
+            if (map.hasLayer(denseDepthLayer)) map.removeLayer(denseDepthLayer);
+            map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
+        }
+    },
+    // ── 9: HAZARD MONITOR — SEISMIC + LIGHTNING ───────────────────────
+    {
+        title: "HAZARD MONITOR", sub: "SEISMIC · LIGHTNING · ALERTS", duration: 10000,
+        layersOn:  [quakeLayer, lightningLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, buoyLayer, denseDepthLayer],
+        renderStatic() {
+            const quakes = liveData.quakes || [];
+            const big = quakes.filter(q => q.mag >= 2.5).slice(0, 2);
+            const bigRows = big.map(q => {
+                const color = q.mag >= 3 ? '#ee5253' : '#ff9f43';
+                const place = q.place.replace(/,?\s*Hawaii( Island)?$/, '');
+                return `<div class="data-row" style="border-left-color:${color};">
+                    <div><div class="row-primary">⚡ ${place}</div>
+                    <div class="row-secondary">${q.depth.toFixed(1)} km depth · ${timeAgo(q.time)}</div></div>
+                    <div class="row-meta" style="color:${color};">M${q.mag}</div>
+                </div>`;
+            }).join('') || `<div class="data-row" style="border-left-color:#2ecc71;">
+                <div><div class="row-primary" style="color:#2ecc71;">No significant seismic activity</div>
+                <div class="row-secondary">USGS live feed · last 24 h</div></div>
+            </div>`;
+            return `<div class="hazard-legend">
+                <div class="legend-title">HAZARD STATUS</div>
+                <div class="legend-section">
+                    <div class="legend-row"><span class="leg-dot" style="background:#ee5253;"></span><span>M3.0+ Earthquake</span></div>
+                    <div class="legend-row"><span class="leg-dot" style="background:#ff9f43;"></span><span>M2.0–2.9 Earthquake</span></div>
+                    <div class="legend-row"><span class="leg-dot" style="background:#ffd32a;"></span><span>&lt;M2.0 Micro-seismic</span></div>
+                    <div class="legend-row"><span class="leg-dot" style="background:#a29bfe;"></span><span>NWS Lightning zone</span></div>
+                </div>
+            </div>
+            <div class="data-list" style="margin-top:4px;">${bigRows}</div>`;
+        }
     },
 ];
 
@@ -590,11 +779,20 @@ const PAGE_SIZE = 3;
 let currentStateIndex = 0;
 let currentPage       = 0;
 let _pageTimer        = null;
+let _prevStateIndex   = -1;
 
 function transitionState() {
     if (_pageTimer) clearTimeout(_pageTimer);
 
-    const state = uiStates[currentStateIndex];
+    const prevState = _prevStateIndex >= 0 ? uiStates[_prevStateIndex] : null;
+    const state     = uiStates[currentStateIndex];
+
+    // Fire lifecycle hooks — exit old state, enter new state
+    if (_prevStateIndex !== currentStateIndex) {
+        if (prevState?.onExit)  prevState.onExit();
+        if (state?.onEnter)     state.onEnter();
+        _prevStateIndex = currentStateIndex;
+    }
 
     // Layer toggles
     state.layersOn.forEach(l  => { if (!map.hasLayer(l)) map.addLayer(l); });
@@ -643,6 +841,10 @@ function transitionState() {
 // =====================================================================
 // BOOT — prefetch all data, then start rotation + schedule refreshes
 // =====================================================================
+// Non-blocking fetches (slow/rate-limited APIs — don't hold up the boot)
+fetchAircraft();
+fetchWind();
+
 Promise.all([fetchWeather(), fetchBuoys(), fetchQuakes(), fetchAlerts(), fetchAirQuality()])
     .finally(() => {
         transitionState();
@@ -651,4 +853,6 @@ Promise.all([fetchWeather(), fetchBuoys(), fetchQuakes(), fetchAlerts(), fetchAi
         setInterval(fetchQuakes,      5 * 60 * 1000);
         setInterval(fetchAlerts,      5 * 60 * 1000);
         setInterval(fetchAirQuality, 15 * 60 * 1000);
+        setInterval(fetchAircraft,   10 * 60 * 1000);
+        setInterval(fetchWind,       30 * 60 * 1000); // Open-Meteo updates hourly
     });

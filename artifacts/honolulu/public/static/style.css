@@ -388,6 +388,17 @@ body, html {
     40%           { opacity: 0.2; }
 }
 
+/* ── DENSE DEPTH LABELS (traffic zoom-in view) ───────────────────── */
+.depth-label-dense {
+    color: rgba(129, 236, 236, 0.55);
+    font-size: 9.5px;
+}
+
+/* ── HELICOPTER traffic labels ────────────────────────────────────── */
+.traffic-label-helo {
+    color: #ffd32a;
+}
+
 /* ── BUOY HUD BOXES ───────────────────────────────────────────────── */
 .buoy-box {
     background: rgba(10, 14, 26, 0.88);
@@ -411,4 +422,40 @@ body, html {
     font-weight: bold;
     color: #0abde3;
     font-family: monospace;
+}
+
+/* ── HAZARD MONITOR / ROMS LEGEND ─────────────────────────────────── */
+.hazard-legend {
+    padding: 4px 2px;
+}
+
+.legend-title {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #a4b0be;
+    margin-bottom: 6px;
+}
+
+.legend-section {
+    margin-bottom: 8px;
+}
+
+.legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: #dfe6e9;
+    margin: 3px 0;
+}
+
+.leg-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 4px currentColor;
 }
