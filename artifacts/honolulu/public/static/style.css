@@ -293,6 +293,18 @@ body, html {
     white-space: nowrap;
 }
 
+.surf-label {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    color: #1dd1a1;
+    font-family: sans-serif;
+    font-size: 10px;
+    font-weight: bold;
+    text-shadow: 1px 1px 3px #000, -1px -1px 0 #000;
+    white-space: nowrap;
+}
+
 .buoy-box {
     background: rgba(10, 14, 26, 0.88);
     border: 1px solid #0abde3;
