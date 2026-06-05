@@ -204,27 +204,31 @@ body, html {
 }
 
 .vector-arrow {
-    background: transparent; 
-    border: none; 
+    background: transparent;
+    border: none;
     box-shadow: none;
-    color: #ffffff; 
-    font-family: monospace; 
-    font-size: 13px; 
-    text-align: center; 
+    color: #feca57;               /* gold — distinct from cyan currents */
+    font-family: monospace;
+    font-size: 26px;              /* was 13px — too small to read on tiles */
+    line-height: 1;
+    text-align: center;
     font-weight: bold;
-    text-shadow: 2px 2px 2px #000, -1px -1px 0 #000, 1px -1px 0 #000;
+    -webkit-text-stroke: 0.6px #000;
+    text-shadow: 0 0 3px #000, 0 0 6px #000, 1px 1px 2px #000, -1px -1px 2px #000;
 }
 
 .current-arrow {
-    background: transparent; 
-    border: none; 
+    background: transparent;
+    border: none;
     box-shadow: none;
-    color: #48dbfb; 
-    font-family: monospace; 
-    font-size: 16px; 
-    text-align: center; 
+    color: #2bd9ff;               /* brighter cyan */
+    font-family: monospace;
+    font-size: 28px;             /* was 16px */
+    line-height: 1;
+    text-align: center;
     font-weight: bold;
-    text-shadow: 2px 2px 2px #000;
+    -webkit-text-stroke: 0.6px #000;
+    text-shadow: 0 0 3px #000, 0 0 6px #000, 1px 1px 2px #000, -1px -1px 2px #000;
 }
 
 /* Glass HUD Overlay Clusters */
@@ -492,21 +496,21 @@ body, html {
 
 /* ── LAND WEATHER STATIONS (NWS) ──────────────────────────────────── */
 .wx-box {
-    background: rgba(10, 14, 26, 0.86);
-    border: 1px solid #feca57;
+    background: rgba(8, 12, 22, 0.92);
+    border: 1.5px solid #feca57;
     border-radius: 6px;
-    padding: 3px 7px;
+    padding: 3px 8px;
     backdrop-filter: blur(4px);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.7);
+    box-shadow: 0 0 9px rgba(254, 202, 87, 0.5), 0 2px 8px rgba(0,0,0,0.85);
 }
 .wx-name {
-    font-size: 8px;
-    color: #a4b0be;
+    font-size: 9px;
+    color: #d7e0ea;
     text-transform: uppercase;
     letter-spacing: 0.6px;
 }
 .wx-val {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: bold;
     color: #feca57;
     font-family: monospace;

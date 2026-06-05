@@ -122,11 +122,40 @@ function makeSeededRng(seed) {
 }
 const rng = makeSeededRng(0xABCDEF42);
 
-// --- LAND MASK — only skip depth scatter over actual island terrain ---
+// --- LAND MASK — polygon outlines per island so depth soundings never fall on
+// land. Rectangles missed the irregular north coasts and ignored Lanai / West
+// Maui entirely (depths landed on those islands). Outlines are rough and may
+// over-approximate inland slightly — harmless, since only the scatter is masked;
+// curated shallow-bay soundings are added unconditionally and always remain. ---
+const ISLAND_POLYS = [
+    // Oahu
+    [[21.575,-158.28],[21.59,-158.10],[21.68,-158.04],[21.71,-157.99],
+     [21.65,-157.92],[21.45,-157.79],[21.31,-157.65],[21.27,-157.69],
+     [21.26,-157.80],[21.30,-158.00],[21.30,-158.11],[21.44,-158.19]],
+    // Molokai
+    [[21.21,-157.26],[21.21,-157.00],[21.17,-156.71],[21.12,-156.74],
+     [21.06,-157.00],[21.08,-157.22]],
+    // Lanai
+    [[20.92,-156.92],[20.90,-156.82],[20.82,-156.80],[20.74,-156.87],
+     [20.74,-156.95],[20.82,-157.06],[20.90,-157.02]],
+    // West Maui (only the western lobe falls within the map bounds)
+    [[21.03,-156.61],[20.98,-156.48],[20.80,-156.45],[20.80,-156.55],
+     [20.87,-156.69],[20.94,-156.70],[20.99,-156.66]],
+];
+function pointInPoly(lat, lng, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const yi = poly[i][0], xi = poly[i][1];
+        const yj = poly[j][0], xj = poly[j][1];
+        const intersect = ((yi > lat) !== (yj > lat)) &&
+            (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
 function isOnLand(lat, lng) {
-    const oahu    = (lat > 21.28 && lat < 21.72 && lng > -158.27 && lng < -157.63);
-    const molokai = (lat > 21.06 && lat < 21.21 && lng > -157.31 && lng < -156.68);
-    return oahu || molokai;
+    for (const poly of ISLAND_POLYS) if (pointInPoly(lat, lng, poly)) return true;
+    return false;
 }
 
 // =====================================================================
@@ -657,7 +686,7 @@ async function fetchWind() {
             // coastal towns) — do NOT land-filter them or nearly all vanish.
             const html = `${pt.arrow}<br><span style="font-size:10px;color:#00ffcc;">${pt.speedKt}</span>`;
             L.marker([pt.lat, pt.lng], { pane: 'windPane',
-                icon: L.divIcon({ className: 'vector-arrow', html, iconSize: [30, 30] })
+                icon: L.divIcon({ className: 'vector-arrow', html, iconSize: [40, 42] })
             }).addTo(windLayer);
         });
     } catch(e) { console.warn('Wind fetch:', e); }
@@ -670,7 +699,7 @@ function renderCurrents(points) {
         if (pt.speedKt == null) return;
         const html = `${pt.arrow}<br><span style="font-size:9px;color:#48dbfb;">${pt.speedKt}kt</span>`;
         L.marker([pt.lat, pt.lng], { pane: 'currentPane',
-            icon: L.divIcon({ className: 'current-arrow', html, iconSize: [34, 34] })
+            icon: L.divIcon({ className: 'current-arrow', html, iconSize: [44, 46] })
         }).addTo(currentLayer);
     });
 }
@@ -1063,14 +1092,18 @@ const uiStates = [
             // every Big-Island quake; relax both so the markers actually frame in.
             map.setMinZoom(7);
             map.setMaxBounds(null);
+            // Depth soundings are meaningless at this scale and just clutter the
+            // ocean — hide the (otherwise permanent) base soundings on hazard.
+            if (map.hasLayer(depthLayer)) map.removeLayer(depthLayer);
             map.flyToBounds([[18.7, -156.0], [21.9, -158.3]], {
                 animate: true, duration: 1.8, padding: [30, 30]
             });
         },
         onExit() {
-            // Restore the Oahu-only lock before returning to the close-up views.
+            // Restore the Oahu-only lock + base soundings before returning.
             map.setMaxBounds(bounds);
             map.setMinZoom(9);
+            if (!map.hasLayer(depthLayer)) map.addLayer(depthLayer);
             map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
         },
         renderStatic() {

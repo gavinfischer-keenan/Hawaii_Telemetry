@@ -55,10 +55,27 @@ function connect() {
     );
   });
 
-  ws.addEventListener("message", (ev: { data: unknown }) => {
+  ws.addEventListener("message", async (ev: { data: unknown }) => {
     try {
-      const raw = typeof ev.data === "string" ? ev.data : String(ev.data);
+      // Node's native WebSocket delivers AISStream frames as binary Blobs, not
+      // strings. The old `String(ev.data)` produced "[object Blob]", so every
+      // frame failed JSON.parse and was silently dropped — the socket looked
+      // "connected" but no vessel ever landed. Decode the binary payload first.
+      const d = ev.data;
+      let raw: string;
+      if (typeof d === "string") raw = d;
+      else if (d instanceof Blob) raw = await d.text();
+      else if (d instanceof ArrayBuffer) raw = Buffer.from(d).toString("utf8");
+      else if (ArrayBuffer.isView(d)) raw = Buffer.from(d.buffer, d.byteOffset, d.byteLength).toString("utf8");
+      else raw = String(d);
       const msg = JSON.parse(raw);
+      // AISStream reports subscription problems as an error frame rather than
+      // closing the socket — surface it so a bad bbox/key doesn't look like
+      // mere data sparsity.
+      if (msg.error ?? msg.Error) {
+        logger.warn({ aisError: msg.error ?? msg.Error }, "AISStream subscription error");
+        return;
+      }
       const meta = msg.MetaData ?? {};
       const mmsi: number | undefined = meta.MMSI;
       if (mmsi == null) return;

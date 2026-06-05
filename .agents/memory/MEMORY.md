@@ -1,1 +1,1 @@
-- [Tile placeholder gray boxes](tile-placeholders.md) — external tile servers return opaque "Zoom Level Not Supported" PNGs (HTTP 200) above their max native zoom; detect by md5, fix with Leaflet maxNativeZoom.
+- [Node WebSocket Blob frames](node-websocket-blob-frames.md) — native Node WebSocket delivers binary frames as Blob; `String(ev.data)` silently breaks JSON.parse → "connected but zero messages". Decode with `await blob.text()`.
