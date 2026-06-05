@@ -2,18 +2,21 @@ import { Router } from "express";
 
 const router = Router();
 
-// NOAA NDBC buoy station IDs around Hawaii
+// NOAA NDBC buoy stations around Oahu and Molokai
 const BUOYS = [
   { id: "51201", name: "Waimea (North Shore)" },
   { id: "51211", name: "Koko Head (South Shore)" },
   { id: "51212", name: "Barbers Point" },
-  { id: "51202", name: "Mokapu" },
+  { id: "51202", name: "Mokapu (NE Oahu)" },
+  { id: "51204", name: "Pailolo Channel" },   // between Molokai and Maui
+  { id: "51213", name: "Kawaihae (Molokai)" }, // west of Molokai area
 ];
 
 async function fetchBuoy(id: string): Promise<Record<string, string | number | null>> {
   const url = `https://www.ndbc.noaa.gov/data/realtime2/${id}.txt`;
   const res = await fetch(url, {
     headers: { "User-Agent": "HonoluluCommandCenter/1.0" },
+    signal: AbortSignal.timeout(8000),
   });
 
   if (!res.ok) throw new Error(`NDBC ${id} responded ${res.status}`);
@@ -37,14 +40,14 @@ async function fetchBuoy(id: string): Promise<Record<string, string | number | n
 
   return {
     id,
-    waveHeight: num("WVHT"),      // meters
-    dominantPeriod: num("DPD"),   // seconds
-    windSpeed: num("WSPD"),       // m/s → convert below
+    waveHeight: num("WVHT"),
+    dominantPeriod: num("DPD"),
+    windSpeed: num("WSPD"),
     windSpeedKt: num("WSPD") != null ? Math.round((num("WSPD") as number) * 1.94384) : null,
-    windDir: num("WDIR"),         // degrees
-    waterTemp: num("WTMP"),       // Celsius
-    airTemp: num("ATMP"),         // Celsius
-    pressure: num("PRES"),        // hPa
+    windDir: num("WDIR"),
+    waterTemp: num("WTMP"),
+    airTemp: num("ATMP"),
+    pressure: num("PRES"),
     time: `${row["YY"] ?? row["#YY"]}-${row["MM"]}-${row["DD"]} ${row["hh"]}:${row["mm"]} UTC`,
   };
 }
