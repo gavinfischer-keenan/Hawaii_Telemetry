@@ -54,13 +54,15 @@ var stationLayer    = L.layerGroup();   // land weather stations (NWS) — shown
 // Dense bathymetry — only added to map during Traffic Combined zoom-in
 var denseDepthLayer = L.layerGroup();
 
-// ── Live road-traffic flow (TomTom flow tiles, proxied server-side so the
-//    API key never ships in the browser). Only shown on the zoomed-in
-//    Traffic Combined view. Renders nothing until TOMTOM_API_KEY is set.
-var trafficFlowLayer = L.tileLayer(
-    '/api/traffic/{z}/{x}/{y}',
-    { pane: 'trafficPane', opacity: 0.85, maxZoom: 18 }
-);
+// ── Live road-traffic flow (TomTom flow tiles) — DISABLED.
+//    Commented out per request: no TomTom key available and Google's traffic
+//    layer can't be overlaid on Leaflet without a billing-enabled Maps JS key.
+//    Re-enable by restoring this layer + its add/removeLayer calls in the
+//    "TRAFFIC — COMBINED" state, and the server /api/traffic route.
+// var trafficFlowLayer = L.tileLayer(
+//     '/api/traffic/{z}/{x}/{y}',
+//     { pane: 'trafficPane', opacity: 0.85, maxZoom: 18 }
+// );
 
 // ── NASA GIBS — GHRSST MUR Sea Surface Temperature (keyless global WMS).
 //    Daily 1 km L4 analysis. PacIOOS THREDDS is unreachable from this host,
@@ -1040,12 +1042,12 @@ const uiStates = [
         holdExtraMs: 3000,   // linger on the last page so the zoom is appreciated
         onEnter() {
             map.flyTo([21.29, -157.84], 12, { animate: true, duration: 1.8 });
-            map.addLayer(trafficFlowLayer);   // live road congestion (needs TOMTOM_API_KEY)
+            // map.addLayer(trafficFlowLayer);   // road congestion DISABLED (no TomTom key)
         },
         onExit() {
-            // Remove dense soundings + traffic flow BEFORE zoom-out
+            // Remove dense soundings BEFORE zoom-out
             if (map.hasLayer(denseDepthLayer))  map.removeLayer(denseDepthLayer);
-            if (map.hasLayer(trafficFlowLayer)) map.removeLayer(trafficFlowLayer);
+            // if (map.hasLayer(trafficFlowLayer)) map.removeLayer(trafficFlowLayer);  // road traffic DISABLED
             map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
         }
     },

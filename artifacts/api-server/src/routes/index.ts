@@ -7,7 +7,7 @@ import alertsRouter from "./alerts";
 import airqualityRouter from "./airquality";
 import aircraftRouter from "./aircraft";
 import windRouter from "./wind";
-import trafficRouter from "./traffic";
+// import trafficRouter from "./traffic"; // DISABLED — road traffic feature commented out (no TomTom key)
 import shipsRouter from "./ships";
 import stationsRouter from "./stations";
 import currentsRouter from "./currents";
@@ -23,7 +23,7 @@ router.use(alertsRouter);
 router.use(airqualityRouter);
 router.use(aircraftRouter);
 router.use(windRouter);
-router.use(trafficRouter);
+// router.use(trafficRouter); // DISABLED — road traffic feature commented out (no TomTom key)
 router.use(shipsRouter);
 router.use(stationsRouter);
 router.use(currentsRouter);
