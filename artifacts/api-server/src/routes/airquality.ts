@@ -5,11 +5,41 @@ const router = Router();
 let cache: { data: unknown; expiresAt: number } | null = null;
 const CACHE_MS = 15 * 60 * 1000;
 
-// WAQI "demo" token — publicly documented for single-station queries
-// Honolulu station feed
-const STATIONS = [
-  { name: "Honolulu", url: "https://api.waqi.info/feed/honolulu/?token=demo" },
+// Oahu + Molokai monitoring points. Open-Meteo Air Quality API is keyless,
+// global, and returns the US AQI plus pollutant concentrations per lat/lng.
+const POINTS = [
+  { name: "Honolulu", lat: 21.307, lng: -157.858 },
+  { name: "Waikiki", lat: 21.276, lng: -157.827 },
+  { name: "Pearl City", lat: 21.397, lng: -157.974 },
+  { name: "Kapolei", lat: 21.336, lng: -158.058 },
+  { name: "Kaneohe", lat: 21.401, lng: -157.798 },
+  { name: "North Shore", lat: 21.592, lng: -158.103 },
+  { name: "Kaunakakai", lat: 21.089, lng: -157.02 },
 ];
+
+interface OMCurrent {
+  time: string;
+  us_aqi: number;
+  pm2_5: number;
+  pm10: number;
+  ozone: number;
+}
+interface OMResult {
+  latitude: number;
+  longitude: number;
+  current: OMCurrent;
+}
+
+function dominantPol(c: OMCurrent): string {
+  // Normalise each pollutant to a rough share of its US AQI breakpoint band
+  // so the larger contributor wins. Approximate — for display only.
+  const scaled: Record<string, number> = {
+    pm25: c.pm2_5 / 35,
+    pm10: c.pm10 / 150,
+    o3: c.ozone / 160,
+  };
+  return Object.entries(scaled).sort((a, b) => b[1] - a[1])[0][0];
+}
 
 router.get("/airquality", async (req, res) => {
   try {
@@ -18,47 +48,36 @@ router.get("/airquality", async (req, res) => {
       return;
     }
 
-    const results = await Promise.allSettled(
-      STATIONS.map(async (s) => {
-        const r = await fetch(s.url, {
-          headers: { "User-Agent": "HonoluluCommandCenter/1.0" },
-        });
-        if (!r.ok) throw new Error(`WAQI ${r.status}`);
-        const json = (await r.json()) as {
-          status: string;
-          data: {
-            aqi: number;
-            city: { name: string; geo: [number, number] };
-            iaqi: {
-              pm25?: { v: number };
-              pm10?: { v: number };
-              o3?: { v: number };
-              co?: { v: number };
-              no2?: { v: number };
-            };
-            dominentpol: string;
-            time: { s: string };
-          };
-        };
-        if (json.status !== "ok") throw new Error("WAQI not ok");
-        const d = json.data;
-        return {
-          name: s.name,
-          lat: d.city.geo[0],
-          lng: d.city.geo[1],
-          aqi: d.aqi,
-          pm25: d.iaqi?.pm25?.v ?? null,
-          pm10: d.iaqi?.pm10?.v ?? null,
-          o3: d.iaqi?.o3?.v ?? null,
-          dominentpol: d.dominentpol,
-          updatedAt: d.time.s,
-        };
-      }),
-    );
+    const lats = POINTS.map((p) => p.lat).join(",");
+    const lngs = POINTS.map((p) => p.lng).join(",");
+    const url =
+      `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lats}` +
+      `&longitude=${lngs}&current=us_aqi,pm2_5,pm10,ozone&timezone=Pacific%2FHonolulu`;
 
-    const sensors = results
-      .filter((r): r is PromiseFulfilledResult<unknown> => r.status === "fulfilled")
-      .map((r) => r.value);
+    const r = await fetch(url, {
+      headers: { "User-Agent": "HonoluluCommandCenter/1.0" },
+    });
+    if (!r.ok) throw new Error(`Open-Meteo ${r.status}`);
+
+    const json = await r.json();
+    // Open-Meteo returns an array when multiple coordinates are requested,
+    // or a single object for one coordinate.
+    const arr: OMResult[] = Array.isArray(json) ? json : [json];
+
+    const sensors = arr.map((d, i) => {
+      const c = d.current;
+      return {
+        name: POINTS[i]?.name ?? `Point ${i + 1}`,
+        lat: POINTS[i]?.lat ?? d.latitude,
+        lng: POINTS[i]?.lng ?? d.longitude,
+        aqi: Math.round(c.us_aqi),
+        pm25: c.pm2_5,
+        pm10: c.pm10,
+        o3: c.ozone,
+        dominentpol: dominantPol(c),
+        updatedAt: c.time,
+      };
+    });
 
     const data = { sensors, fetchedAt: Date.now() };
     cache = { data, expiresAt: Date.now() + CACHE_MS };

@@ -45,44 +45,51 @@ var shipLayer       = L.layerGroup();
 // Dense bathymetry — only added to map during Traffic Combined zoom-in
 var denseDepthLayer = L.layerGroup();
 
-// ── WAQI AQI tile overlay (EPA station color dots — demo token)
-var waqiTileLayer = L.tileLayer(
-    'https://tiles.aqicn.org/tiles/usepa-aqi/{z}/{x}/{y}.png?token=demo',
-    { pane: 'aqiPane', opacity: 0.85, crossOrigin: true }
+// ── Live road-traffic flow (TomTom flow tiles, proxied server-side so the
+//    API key never ships in the browser). Only shown on the zoomed-in
+//    Traffic Combined view. Renders nothing until TOMTOM_API_KEY is set.
+var trafficFlowLayer = L.tileLayer(
+    '/api/traffic/{z}/{x}/{y}',
+    { pane: 'trafficPane', opacity: 0.85, maxZoom: 18 }
 );
 
-// ── PacIOOS ROMS: Sea Surface Temperature via THREDDS WMS
-// Regional Ocean Modeling System, 4km grid, updated daily
-// Colour scale: 22–30 °C (rainbow: blue→green→yellow→red)
+// ── NASA GIBS — GHRSST MUR Sea Surface Temperature (keyless global WMS).
+//    Daily 1 km L4 analysis. PacIOOS THREDDS is unreachable from this host,
+//    so GIBS is the reliable SST source. Data lags ~1 day; request a recent
+//    date so a populated layer always renders.
+var _sstDate = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
 var romsLayer = L.tileLayer.wms(
-    'https://pae-paha.pacioos.hawaii.edu/thredds/wms/roms_hi_best.ncd',
+    'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi',
     {
-        layers:          'temp',
-        styles:          'boxfill/rainbow',
-        format:          'image/png',
-        transparent:     true,
-        version:         '1.1.1',
-        colorscalerange: '22,30',
-        belowmincolor:   'transparent',
-        abovemaxcolor:   'transparent',
-        opacity:         0.70,
-        pane:            'aqiPane',
-        attribution:     'PacIOOS ROMS',
+        layers:      'GHRSST_L4_MUR_Sea_Surface_Temperature',
+        format:      'image/png',
+        transparent: true,
+        version:     '1.3.0',
+        time:        _sstDate,
+        opacity:     0.75,
+        pane:        'aqiPane',
+        attribution: 'NASA GIBS · GHRSST MUR SST',
     }
 );
 
-// --- NEXRAD: Self-refreshing live radar (IEM, ~5-min updates) ---
-// The ts= param cache-busts the browser tile cache each 5-min window,
-// matching the actual IEM NEXRAD composite refresh rate.
+// --- LIVE RADAR: RainViewer global mosaic (~10-min updates) ---
+// The US IEM NEXRAD mosaic (nexrad-n0q) is CONUS-only and has NO Hawaii
+// coverage, so it never showed anything here. RainViewer is global, keyless,
+// and its API returns the latest real frame timestamp each refresh.
 var _radarTile = null;
-function refreshRadar() {
-    const ts = Math.floor(Date.now() / 300000);
-    if (_radarTile) radarLayerGroup.removeLayer(_radarTile);
-    _radarTile = L.tileLayer(
-        `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png?ts=${ts}`,
-        { pane: 'radarPane', opacity: 0.65 }
-    );
-    radarLayerGroup.addLayer(_radarTile);
+async function refreshRadar() {
+    try {
+        const r = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+        if (!r.ok) throw new Error(r.status);
+        const j = await r.json();
+        const past = j.radar?.past || [];
+        if (!past.length) return;
+        const frame = past[past.length - 1];
+        const url = `${j.host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
+        if (_radarTile) radarLayerGroup.removeLayer(_radarTile);
+        _radarTile = L.tileLayer(url, { pane: 'radarPane', opacity: 0.7 });
+        radarLayerGroup.addLayer(_radarTile);
+    } catch (e) { console.warn('Radar fetch:', e); }
 }
 refreshRadar();
 setInterval(refreshRadar, 5 * 60 * 1000);
@@ -242,39 +249,100 @@ const surfSpots = [
 ];
 
 var surfMarkers = [];
+var surfMode = 'small';   // 'small' everywhere; 'large' only in SURF & OCEAN
+
+// Large boxed card — used only in the SURF & OCEAN wave view.
+const BIG_W = 132, BIG_H = 54;
+function makeSurfIconLarge(name, heightStr, color, anchor) {
+    return L.divIcon({
+        className: '',
+        html: `<div class="surf-card" style="border-color:${color};box-shadow:0 0 10px ${color}33;">
+            <div class="surf-card-name">🏄 ${name}</div>
+            <div class="surf-card-ht" style="color:${color};">${heightStr}</div>
+        </div>`,
+        iconSize:   [BIG_W, BIG_H],
+        iconAnchor: anchor || [BIG_W / 2, 0]   // center-top → card hangs below the spot
+    });
+}
+// Compact pin — the default for every other state.
+function makeSurfIconSmall(name, heightStr, color) {
+    const ht = heightStr && heightStr !== '--' ? ` <b style="color:${color};">${heightStr}</b>` : '';
+    return L.divIcon({
+        className: '',
+        html: `<div class="surf-pin" style="border-color:${color};">🏄 ${name}${ht}</div>`,
+        iconSize:   [0, 0],          // let content size itself
+        iconAnchor: [0, 9]           // anchor near the spot; pin grows to the right
+    });
+}
 function initSurfMarkers() {
     surfLayer.clearLayers();
     surfMarkers = [];
     surfSpots.forEach(s => {
-        const icon = L.divIcon({
-            className: '',
-            html: `<div class="surf-marker"><span class="surf-emoji">🏄</span><span class="surf-text">${s.name}: --</span></div>`,
-            iconSize: [145, 26]
+        const marker = L.marker(s.c, {
+            pane: 'surfPane',
+            icon: makeSurfIconSmall(s.name, '--', '#48dbfb')
         });
-        const marker = L.marker(s.c, { pane: 'surfPane', icon });
         marker.addTo(surfLayer);
-        surfMarkers.push({ marker, spot: s });
+        surfMarkers.push({ marker, spot: s, heightStr: '--', color: '#48dbfb' });
     });
 }
 initSurfMarkers();
+
+// Greedy declutter: stack overlapping large cards downward so none cover
+// another (e.g. Waimea no longer hides Pipeline on the North Shore cluster).
+function layoutLargeSurf() {
+    const GAP = 6;
+    const placed = [];
+    const order = [...surfMarkers].sort((a, b) => b.spot.c[0] - a.spot.c[0]); // N→S
+    order.forEach(entry => {
+        const pt = map.latLngToContainerPoint(entry.marker.getLatLng());
+        const rect = { x: pt.x - BIG_W / 2, y: pt.y, w: BIG_W, h: BIG_H };
+        let guard = 0, moved = true;
+        while (moved && guard++ < 60) {
+            moved = false;
+            for (const r of placed) {
+                if (rect.x < r.x + r.w && rect.x + rect.w > r.x &&
+                    rect.y < r.y + r.h && rect.y + rect.h > r.y) {
+                    rect.y = r.y + r.h + GAP;
+                    moved = true;
+                }
+            }
+        }
+        placed.push({ ...rect });
+        const d = rect.y - pt.y;   // pixels the card is pushed below the spot
+        entry.marker.setIcon(
+            makeSurfIconLarge(entry.spot.name, entry.heightStr, entry.color, [BIG_W / 2, -d])
+        );
+    });
+}
+function applySurfIcons() {
+    if (surfMode === 'large') {
+        layoutLargeSurf();
+    } else {
+        surfMarkers.forEach(e =>
+            e.marker.setIcon(makeSurfIconSmall(e.spot.name, e.heightStr, e.color)));
+    }
+}
+function setSurfMode(mode) { surfMode = mode; applySurfIcons(); }
 
 function updateSurfLabels(buoys) {
     if (!buoys) return;
     const byId = {};
     buoys.forEach(b => { byId[b.id] = b; });
-    surfMarkers.forEach(({ marker, spot }) => {
-        const buoy = byId[spot.buoyId];
-        let heightStr = '--';
+    surfMarkers.forEach(entry => {
+        const buoy = byId[entry.spot.buoyId];
+        let heightStr = '--', color = '#48dbfb';
         if (buoy && !buoy.error && buoy.waveHeight != null) {
-            const hft = buoy.waveHeight * 3.281 * spot.scale;
-            heightStr = `${Math.max(1, Math.floor(hft * 0.85))}-${Math.ceil(hft * 1.15)}ft`;
+            const hft = buoy.waveHeight * 3.281 * entry.spot.scale;
+            const lo  = Math.max(1, Math.floor(hft * 0.85));
+            const hi  = Math.ceil(hft * 1.15);
+            heightStr = `${lo}-${hi}ft`;
+            color = hft > 6 ? '#ff9f43' : '#1dd1a1';
         }
-        marker.setIcon(L.divIcon({
-            className: '',
-            html: `<div class="surf-marker"><span class="surf-emoji">🏄</span><span class="surf-text">${spot.name}: ${heightStr}</span></div>`,
-            iconSize: [145, 26]
-        }));
+        entry.heightStr = heightStr;
+        entry.color = color;
     });
+    applySurfIcons();
 }
 
 // =====================================================================
@@ -333,7 +401,8 @@ async function fetchBuoys() {
             const wt = b.waterTemp  != null ? `${cToF(b.waterTemp)}°F`   : '--';
             const html = `<div class="buoy-box"><div class="buoy-name">${b.name.split(' ')[0]}</div><div class="buoy-val">🌊${wh} 🌡${wt}</div></div>`;
             L.marker(coords, { pane: 'poiPane',
-                icon: L.divIcon({ className: '', html, iconSize: [130, 38] })
+                // center-bottom anchor → box floats ABOVE the buoy point (offshore/northward)
+                icon: L.divIcon({ className: '', html, iconSize: [130, 38], iconAnchor: [65, 38] })
             }).addTo(buoyLayer);
         });
 
@@ -350,7 +419,9 @@ async function fetchQuakes() {
 
         quakeLayer.clearLayers();
         data.quakes.forEach(q => {
-            if (q.lat < 20.3 || q.lat > 23 || q.lng < -160.5 || q.lng > -154.5) return;
+            // Whole Hawaiian chain — most quakes cluster on the Big Island
+            // (lat ~19), which the old 20.3 cutoff wrongly excluded entirely.
+            if (q.lat < 18.5 || q.lat > 23 || q.lng < -161 || q.lng > -154) return;
             const color  = q.mag >= 3 ? '#ee5253' : q.mag >= 2 ? '#ff9f43' : '#ffd32a';
             const size   = Math.max(22, Math.round(q.mag * 18));
             L.marker([q.lat, q.lng], {
@@ -458,7 +529,8 @@ async function fetchWind() {
 
         windLayer.clearLayers();
         liveData.wind.forEach(pt => {
-            if (isOnLand(pt.lat, pt.lng)) return;
+            // Wind points are curated named locations (surf spots, channels,
+            // coastal towns) — do NOT land-filter them or nearly all vanish.
             const html = `${pt.arrow}<br><span style="font-size:10px;color:#00ffcc;">${pt.speedKt}</span>`;
             L.marker([pt.lat, pt.lng], { pane: 'windPane',
                 icon: L.divIcon({ className: 'vector-arrow', html, iconSize: [30, 30] })
@@ -617,7 +689,7 @@ const uiStates = [
     {
         title: "METEOROLOGICAL", sub: "LIVE NWS DOPPLER", duration: 6000,
         layersOn:  [radarLayerGroup],
-        layersOff: [windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [windLayer, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
             const w = liveData.weather;
             if (!w) return `<div class="data-row"><div class="row-primary">Loading NWS data…</div></div>`;
@@ -638,7 +710,7 @@ const uiStates = [
     {
         title: "METEOROLOGICAL", sub: "SURFACE WIND MATRIX", duration: 6000,
         layersOn:  [windLayer],
-        layersOff: [radarLayerGroup, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
             const pts = liveData.wind;
             if (!pts || !pts.length) return `<div class="data-row"><div class="row-primary">Loading wind data…</div></div>`;
@@ -658,25 +730,53 @@ const uiStates = [
             return `<div class="data-list">${rows}</div>`;
         }
     },
-    // ── 2: SURF REPORT ───────────────────────────────────────────────
+    // ── 2: SURF & OCEAN — combined surf cards + buoy HUDs ────────────
     {
-        title: "SURF REPORT", sub: "NDBC WAVE ANALYSIS", perPageMs: 3000,
-        layersOn:  [],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
-        getItems: getSurfItems, renderItem: renderSurfItem
-    },
-    // ── 3: OCEANOGRAPHIC — NDBC BUOYS ────────────────────────────────
-    {
-        title: "OCEANOGRAPHIC", sub: "NDBC BUOY TELEMETRY", perPageMs: 4000,
+        title: "SURF & OCEAN", sub: "NDBC · WAVE + BUOY TELEMETRY", duration: 9000,
         layersOn:  [buoyLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
-        getItems: getBuoyItems, renderItem: renderBuoyItem
+        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        renderStatic() {
+            const buoys  = liveData.buoys || [];
+            const active = buoys.filter(b => !b.error && b.waveHeight != null);
+            const avgFt  = active.length
+                ? (active.reduce((s, b) => s + b.waveHeight * 3.281, 0) / active.length).toFixed(1)
+                : '--';
+            const avgTmp = active.length
+                ? Math.round(active.reduce((s, b) => s + (b.waterTemp ?? 0), 0) / active.length * 9/5 + 32)
+                : '--';
+            // Find peak spot
+            const byId = {};
+            active.forEach(b => { byId[b.id] = b; });
+            let peakName = '--', peakHi = 0;
+            surfSpots.forEach(s => {
+                const b = byId[s.buoyId];
+                if (b && b.waveHeight != null) {
+                    const hi = Math.ceil(b.waveHeight * 3.281 * s.scale * 1.15);
+                    if (hi > peakHi) { peakHi = hi; peakName = s.name; }
+                }
+            });
+            const peakStr = peakHi > 0 ? `${peakHi}ft` : '--';
+            const peakColor = peakHi > 6 ? '#ff9f43' : '#1dd1a1';
+            return `<div class="metric-grid">
+                <div class="metric-box"><div class="metric-val">${avgFt !== '--' ? avgFt + 'ft' : '--'}</div><div class="metric-lbl">Avg Swell</div></div>
+                <div class="metric-box"><div class="metric-val">${avgTmp !== '--' ? avgTmp + '°F' : '--'}</div><div class="metric-lbl">Water Temp</div></div>
+                <div class="metric-box"><div class="metric-val">${active.length}</div><div class="metric-lbl">Buoys Live</div></div>
+                <div class="metric-box"><div class="metric-val" style="color:${peakColor};">${peakStr}</div><div class="metric-lbl">Peak · ${peakName}</div></div>
+            </div>
+            <div class="data-row" style="margin-top:4px;border-left-color:#0abde3;">
+                <div><div class="row-primary">Surf cards + buoy HUDs on map</div>
+                <div class="row-secondary">NDBC live · 5-min buoy telemetry</div></div>
+                <div class="row-meta" style="color:#2ecc71;">LIVE</div>
+            </div>`;
+        },
+        onEnter() { setSurfMode('large'); },   // big boxed cards + declutter
+        onExit()  { setSurfMode('small'); }    // compact pins everywhere else
     },
-    // ── 4: ROMS OCEAN MODEL — PacIOOS SST ────────────────────────────
+    // ── 4: SEA SURFACE TEMP — NASA GIBS MUR ──────────────────────────
     {
-        title: "ROMS OCEAN MODEL", sub: "PacIOOS · SEA SURFACE TEMP", duration: 8000,
+        title: "SEA SURFACE TEMP", sub: "NASA GIBS · GHRSST MUR", duration: 8000,
         layersOn:  [romsLayer, buoyLayer],
-        layersOff: [radarLayerGroup, windLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
             return `<div class="hazard-legend">
                 <div class="legend-title">SEA SURFACE TEMPERATURE</div>
@@ -688,22 +788,22 @@ const uiStates = [
                     </div>
                 </div>
                 <div class="data-row" style="border-left-color:#48dbfb;margin-top:6px;">
-                    <div><div class="row-primary">PacIOOS ROMS Model</div>
-                    <div class="row-secondary">Regional Ocean Modeling System · 4 km grid</div></div>
+                    <div><div class="row-primary">GHRSST MUR L4</div>
+                    <div class="row-secondary">NASA GIBS · 1 km global SST analysis</div></div>
                     <div class="row-meta" style="color:#2ecc71;">LIVE</div>
                 </div>
                 <div class="data-row" style="border-left-color:#74b9ff;">
-                    <div><div class="row-primary">72-hr Forecast Window</div>
-                    <div class="row-secondary">Updated daily · ocean model output</div></div>
+                    <div><div class="row-primary">Daily Analysis</div>
+                    <div class="row-secondary">Multi-sensor blended · ~1-day latency</div></div>
                     <div class="row-meta">WMS</div>
                 </div>
             </div>`;
         }
     },
-    // ── 5: AIR QUALITY — WAQI EPA tiles + station data ───────────────
+    // ── 5: AIR QUALITY — Open-Meteo US AQI (multi-point) ─────────────
     {
-        title: "AIR QUALITY", sub: "EPA AQI · WAQI TILE OVERLAY", perPageMs: 4000,
-        layersOn:  [aqiLayer, waqiTileLayer],
+        title: "AIR QUALITY", sub: "US AQI · OPEN-METEO", perPageMs: 4000,
+        layersOn:  [aqiLayer],
         layersOff: [radarLayerGroup, windLayer, romsLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getAqiItems, renderItem: renderAqiItem
     },
@@ -711,28 +811,31 @@ const uiStates = [
     {
         title: "TRAFFIC — AVIATION", sub: "FLIGHT VECTOR LOG", perPageMs: 3500,
         layersOn:  [airLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getAviationItems, renderItem: renderAviationItem
     },
     // ── 7: TRAFFIC — MARITIME ─────────────────────────────────────────
     {
         title: "TRAFFIC — MARITIME", sub: "VESSEL TRACKING LOG", perPageMs: 3500,
         layersOn:  [shipLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, airLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getShipItems, renderItem: renderShipItem
     },
     // ── 8: TRAFFIC — COMBINED (harbor approach zoom-in) ───────────────
     {
         title: "TRAFFIC — COMBINED", sub: "HONOLULU HARBOR APPROACH", perPageMs: 3500,
         layersOn:  [airLayer, shipLayer, denseDepthLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, buoyLayer, quakeLayer, lightningLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, buoyLayer, quakeLayer, lightningLayer],
         getItems: getTrafficItems, renderItem: renderTrafficItem,
+        holdExtraMs: 3000,   // linger on the last page so the zoom is appreciated
         onEnter() {
             map.flyTo([21.29, -157.84], 12, { animate: true, duration: 1.8 });
+            map.addLayer(trafficFlowLayer);   // live road congestion (needs TOMTOM_API_KEY)
         },
         onExit() {
-            // Remove dense soundings BEFORE zoom-out — they look cluttered at z10
-            if (map.hasLayer(denseDepthLayer)) map.removeLayer(denseDepthLayer);
+            // Remove dense soundings + traffic flow BEFORE zoom-out
+            if (map.hasLayer(denseDepthLayer))  map.removeLayer(denseDepthLayer);
+            if (map.hasLayer(trafficFlowLayer)) map.removeLayer(trafficFlowLayer);
             map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
         }
     },
@@ -740,7 +843,17 @@ const uiStates = [
     {
         title: "HAZARD MONITOR", sub: "SEISMIC · LIGHTNING · ALERTS", duration: 10000,
         layersOn:  [quakeLayer, lightningLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, waqiTileLayer, aqiLayer, airLayer, shipLayer, buoyLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, denseDepthLayer],
+        onEnter() {
+            // Pull back to frame the whole chain — quakes cluster on the Big
+            // Island (~19°N), well south of the default Oahu-only view.
+            map.flyToBounds([[18.9, -156.2], [21.8, -157.9]], {
+                animate: true, duration: 1.8, padding: [40, 40]
+            });
+        },
+        onExit() {
+            map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
+        },
         renderStatic() {
             const quakes = liveData.quakes || [];
             const big = quakes.filter(q => q.mag >= 2.5).slice(0, 2);
@@ -819,15 +932,17 @@ function transitionState() {
             : '';
         contentEl.innerHTML = `<div class="data-list">${pageItems.map(state.renderItem).join('')}</div>${pageHint}`;
 
+        const isLast = currentPage + 1 >= totalPages;
+        const dwell  = (state.perPageMs ?? 3000) + (isLast ? (state.holdExtraMs ?? 0) : 0);
         _pageTimer = setTimeout(() => {
-            if (currentPage + 1 < totalPages) {
+            if (!isLast) {
                 currentPage++;
             } else {
                 currentPage = 0;
                 currentStateIndex = (currentStateIndex + 1) % uiStates.length;
             }
             transitionState();
-        }, state.perPageMs ?? 3000);
+        }, dwell);
     } else {
         contentEl.innerHTML = state.renderStatic();
         _pageTimer = setTimeout(() => {

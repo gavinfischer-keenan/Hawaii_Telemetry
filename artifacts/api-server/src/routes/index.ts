@@ -7,6 +7,7 @@ import alertsRouter from "./alerts";
 import airqualityRouter from "./airquality";
 import aircraftRouter from "./aircraft";
 import windRouter from "./wind";
+import trafficRouter from "./traffic";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(alertsRouter);
 router.use(airqualityRouter);
 router.use(aircraftRouter);
 router.use(windRouter);
+router.use(trafficRouter);
 
 export default router;
