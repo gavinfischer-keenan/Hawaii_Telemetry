@@ -3,7 +3,7 @@
 // =====================================================================
 
 // --- MAP SETUP ---
-const bounds = [[20.80, -158.45], [21.75, -156.45]];
+const bounds = [[20.75, -158.45], [21.75, -156.45]];
 
 var map = L.map('map', {
     zoomControl: false, attributionControl: false,
@@ -1020,7 +1020,7 @@ const uiStates = [
             });
         },
         onExit() {
-            // Restore the Oahu-only lock + base soundings before returning.
+            // Restore the island-chain pan lock before returning.
             map.setMaxBounds(bounds);
             map.setMinZoom(9);
             map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
