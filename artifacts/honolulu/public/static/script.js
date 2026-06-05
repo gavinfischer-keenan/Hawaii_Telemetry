@@ -5,10 +5,14 @@
 // --- MAP SETUP ---
 const bounds = [[20.75, -158.45], [21.75, -156.45]];
 
+// minZoom 10 (not 9): at zoom 9 the ~2°-wide island-chain bounds are narrower
+// than the wide 16:9 viewport, so the view overflows the bounds and looks "way
+// zoomed out". Zoom 10 is the tightest level where the bounds fill the screen —
+// it's also the level every flyTo returns to, so boot + every page now match.
 var map = L.map('map', {
     zoomControl: false, attributionControl: false,
-    minZoom: 9, maxZoom: 12, maxBounds: bounds, maxBoundsViscosity: 1.0
-}).setView([21.265, -157.785], 9);
+    minZoom: 10, maxZoom: 12, maxBounds: bounds, maxBoundsViscosity: 1.0
+}).setView([21.265, -157.785], 10);
 // Prevent all user interaction — map is display-only; programmatic flyTo still works
 map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
 map.scrollWheelZoom.disable(); map.boxZoom.disable(); map.keyboard.disable();
@@ -1022,7 +1026,7 @@ const uiStates = [
         onExit() {
             // Restore the island-chain pan lock before returning.
             map.setMaxBounds(bounds);
-            map.setMinZoom(9);
+            map.setMinZoom(10);
             map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
         },
         renderStatic() {
