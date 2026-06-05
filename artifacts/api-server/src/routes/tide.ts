@@ -48,8 +48,19 @@ router.get("/tide", async (req, res) => {
       return;
     }
 
-    // Window starting yesterday so we always have a "previous" event.
-    const begin = new Date(Date.now() - 24 * 3600 * 1000);
+    // Window starting yesterday (Honolulu calendar date) so we always have a
+    // "previous" event. Using UTC here can land on the wrong day near HST
+    // midnight; anchor to the Hawaii date, then step back one day. (HST has no
+    // DST, so plain 24h UTC math on a date-only anchor is safe.)
+    const df = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Pacific/Honolulu",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const dp = Object.fromEntries(df.formatToParts(new Date()).map((p) => [p.type, p.value]));
+    const hawaiiToday = new Date(`${dp.year}-${dp.month}-${dp.day}T00:00:00Z`);
+    const begin = new Date(hawaiiToday.getTime() - 24 * 3600 * 1000);
     const beginStr =
       begin.getUTCFullYear().toString() +
       (begin.getUTCMonth() + 1).toString().padStart(2, "0") +
