@@ -38,7 +38,7 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/dark_only_labels/{z}/
 // --- LAYER GROUPS ---
 // Always-visible permanent layers:
 var depthLayer      = L.layerGroup().addTo(map);
-var surfLayer       = L.layerGroup().addTo(map);
+var surfLayer       = L.layerGroup();   // only shown on the SURF & OCEAN view
 var staticPoiLayer  = L.layerGroup().addTo(map);
 // Panel-toggled layers:
 var radarLayerGroup = L.layerGroup();
@@ -66,7 +66,10 @@ var trafficFlowLayer = L.tileLayer(
 //    Daily 1 km L4 analysis. PacIOOS THREDDS is unreachable from this host,
 //    so GIBS is the reliable SST source. Data lags ~1 day; request a recent
 //    date so a populated layer always renders.
-var _sstDate = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+// GIBS publishes MUR SST with a lag: tiles for the last ~2 days come back EMPTY
+// (transparent placeholders), so the layer rendered nothing. 3 days back always
+// has a populated global analysis.
+var _sstDate = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
 // GIBS WMTS XYZ tiles (Leaflet substitutes {time}/{z}/{y}/{x}). The previous
 // WMS GetMap variant rendered nothing here; the WMTS REST endpoint is the
 // GIBS-recommended path for web maps and tiles reliably. MUR SST is published
@@ -327,15 +330,17 @@ function declutterLabels() {
     const large = surfMode === 'large';
     const entries = [];
 
-    surfMarkers.forEach(e => {
-        const w = large ? BIG_W : SMALL_W;
-        const h = large ? BIG_H : SMALL_H;
-        entries.push({
-            latlng: e.marker.getLatLng(), w, h,
-            offsetTop: large ? 4 : -h / 2,   // cards hang below; pins center on spot
-            apply: (ax, ay) => rebuildSurfIcon(e, [ax, ay])
+    if (map.hasLayer(surfLayer)) {
+        surfMarkers.forEach(e => {
+            const w = large ? BIG_W : SMALL_W;
+            const h = large ? BIG_H : SMALL_H;
+            entries.push({
+                latlng: e.marker.getLatLng(), w, h,
+                offsetTop: large ? 4 : -h / 2,   // cards hang below; pins center on spot
+                apply: (ax, ay) => rebuildSurfIcon(e, [ax, ay])
+            });
         });
-    });
+    }
 
     if (map.hasLayer(buoyLayer)) {
         buoyMarkers.forEach(b => {
@@ -422,7 +427,7 @@ function updateSurfLabels(buoys) {
 // =====================================================================
 // LIVE DATA STORE
 // =====================================================================
-var liveData = { weather: null, buoys: null, quakes: null, alerts: null, airquality: null, aircraft: [], wind: [], ships: [], shipsConnected: false, stations: [] };
+var liveData = { weather: null, buoys: null, quakes: null, alerts: null, airquality: null, aircraft: [], wind: [], ships: [], shipsConnected: false, stations: [], currents: null, tide: null };
 
 const buoyCoords = {
     '51201': [21.673, -158.112],
@@ -656,6 +661,36 @@ async function fetchWind() {
     } catch(e) { console.warn('Wind fetch:', e); }
 }
 
+// ─── Ocean surface currents (Open-Meteo Marine model via /api/currents)
+function renderCurrents(points) {
+    currentLayer.clearLayers();
+    (points || []).forEach(pt => {
+        if (pt.speedKt == null) return;
+        const html = `${pt.arrow}<br><span style="font-size:9px;color:#48dbfb;">${pt.speedKt}kt</span>`;
+        L.marker([pt.lat, pt.lng], { pane: 'currentPane',
+            icon: L.divIcon({ className: 'current-arrow', html, iconSize: [34, 34] })
+        }).addTo(currentLayer);
+    });
+}
+async function fetchCurrents() {
+    try {
+        const r = await fetch('/api/currents');
+        if (!r.ok) throw new Error(r.status);
+        const data = await r.json();
+        liveData.currents = data;
+        renderCurrents(data.points);
+    } catch(e) { console.warn('Currents fetch:', e); }
+}
+
+// ─── Tide state for Honolulu Harbor (NOAA CO-OPS via /api/tide)
+async function fetchTide() {
+    try {
+        const r = await fetch('/api/tide');
+        if (!r.ok) throw new Error(r.status);
+        liveData.tide = await r.json();
+    } catch(e) { console.warn('Tide fetch:', e); }
+}
+
 // =====================================================================
 // PANEL ITEM GENERATORS (each returns an array; engine paginates 3/page)
 // =====================================================================
@@ -719,9 +754,11 @@ function getAviationItems() {
         const isHelo = (a.altFt != null && a.altFt < 3000) || (a.speedKt != null && a.speedKt < 120 && a.altFt < 5000);
         const alt    = a.altFt  != null ? `${Math.round(a.altFt / 100) * 100}ft` : '--';
         const spd    = a.speedKt != null ? `${a.speedKt} kts` : '--';
-        const route  = a.registration
-            ? `${a.registration}${a.acType ? ' · ' + a.acType : ''}`
-            : (a.acType || a.icao24 || '—');
+        const route  = (a.origin && a.dest)
+            ? `${a.origin} ➔ ${a.dest}`
+            : a.registration
+                ? `${a.registration}${a.acType ? ' · ' + a.acType : ''}`
+                : (a.acType || a.icao24 || '—');
         return { call: a.callsign, type: isHelo ? '🚁' : '✈️', route, alt, spd };
     });
     if (real.length) return real;
@@ -837,7 +874,6 @@ function renderAqiItem(item) {
 
 // =====================================================================
 // UI STATE MACHINE
-// (currentLayer removed — no free real-time ocean current API)
 // =====================================================================
 const uiStates = [
     // ── 0: METEOROLOGICAL — NWS DOPPLER RADAR ────────────────────────
@@ -887,8 +923,8 @@ const uiStates = [
     },
     // ── 2: SURF & OCEAN — combined surf cards + buoy HUDs ────────────
     {
-        title: "SURF & OCEAN", sub: "NDBC · WAVE + BUOY TELEMETRY", duration: 9000,
-        layersOn:  [buoyLayer],
+        title: "SURF & OCEAN", sub: "NDBC · WAVE + BUOY + CURRENTS", duration: 9000,
+        layersOn:  [buoyLayer, surfLayer, currentLayer],
         layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
             const buoys  = liveData.buoys || [];
@@ -912,16 +948,35 @@ const uiStates = [
             });
             const peakStr = peakHi > 0 ? `${peakHi}ft` : '--';
             const peakColor = peakHi > 6 ? '#ff9f43' : '#1dd1a1';
+            // Ocean current (model) + tide state for the ocean report rows
+            const cur = liveData.currents;
+            let curArrow = '·', curSpeed = '--', curWhere = 'Open-Meteo model';
+            if (cur && cur.points && cur.points.length) {
+                const strong = cur.points.filter(p => p.speedKt != null)
+                    .sort((a, b) => b.speedKt - a.speedKt)[0];
+                if (strong) { curArrow = strong.arrow; curSpeed = `${strong.speedKt} kt`; curWhere = strong.name; }
+            }
+            const tide = liveData.tide;
+            const tideState = tide?.state ?? '--';
+            const tideColor = tideState === 'Rising' ? '#1dd1a1' : tideState === 'Falling' ? '#ff9f43' : '#48dbfb';
+            const tideNext = tide?.next ? `${tide.next.type} ${tide.next.time}` : '--';
             return `<div class="metric-grid">
                 <div class="metric-box"><div class="metric-val">${avgFt !== '--' ? avgFt + 'ft' : '--'}</div><div class="metric-lbl">Avg Swell</div></div>
                 <div class="metric-box"><div class="metric-val">${avgTmp !== '--' ? avgTmp + '°F' : '--'}</div><div class="metric-lbl">Water Temp</div></div>
                 <div class="metric-box"><div class="metric-val">${active.length}</div><div class="metric-lbl">Buoys Live</div></div>
                 <div class="metric-box"><div class="metric-val" style="color:${peakColor};">${peakStr}</div><div class="metric-lbl">Peak · ${peakName}</div></div>
             </div>
-            <div class="data-row" style="margin-top:4px;border-left-color:#0abde3;">
-                <div><div class="row-primary">Surf cards + buoy HUDs on map</div>
-                <div class="row-secondary">NDBC live · 5-min buoy telemetry</div></div>
-                <div class="row-meta" style="color:#2ecc71;">LIVE</div>
+            <div class="data-list" style="margin-top:4px;">
+                <div class="data-row" style="border-left-color:#48dbfb;">
+                    <div><div class="row-primary">${curArrow} Current ${curSpeed}</div>
+                    <div class="row-secondary">${curWhere}</div></div>
+                    <div class="row-meta" style="color:#48dbfb;">DRIFT</div>
+                </div>
+                <div class="data-row" style="border-left-color:${tideColor};">
+                    <div><div class="row-primary">🌊 Tide ${tideState}</div>
+                    <div class="row-secondary">${tide?.station ?? 'Honolulu'} · next</div></div>
+                    <div class="row-meta" style="color:${tideColor};">${tideNext}</div>
+                </div>
             </div>`;
         },
         onEnter() { setSurfMode('large'); },   // big boxed cards + declutter
@@ -1001,12 +1056,19 @@ const uiStates = [
         layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, denseDepthLayer],
         onEnter() {
             // Pull back to frame the whole chain — quakes cluster on the Big
-            // Island (~19°N), well south of the default Oahu-only view.
-            map.flyToBounds([[18.9, -156.2], [21.8, -157.9]], {
-                animate: true, duration: 1.8, padding: [40, 40]
+            // Island (~19°N), well south of the default Oahu-only view. The
+            // default maxBounds + minZoom 9 clamp the view to Oahu, which hid
+            // every Big-Island quake; relax both so the markers actually frame in.
+            map.setMinZoom(7);
+            map.setMaxBounds(null);
+            map.flyToBounds([[18.7, -156.0], [21.9, -158.3]], {
+                animate: true, duration: 1.8, padding: [30, 30]
             });
         },
         onExit() {
+            // Restore the Oahu-only lock before returning to the close-up views.
+            map.setMaxBounds(bounds);
+            map.setMinZoom(9);
             map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
         },
         renderStatic() {
@@ -1043,7 +1105,7 @@ const uiStates = [
 // max 3 items visible at a time; 3s+ per page; rotate within state
 // before advancing to next state
 // =====================================================================
-const PAGE_SIZE = 3;
+const PAGE_SIZE = 6;   // 2 columns × 3 rows visible per page
 let currentStateIndex = 0;
 let currentPage       = 0;
 let _pageTimer        = null;
@@ -1066,11 +1128,12 @@ function transitionState() {
     state.layersOn.forEach(l  => { if (!map.hasLayer(l)) map.addLayer(l); });
     state.layersOff.forEach(l => { if (map.hasLayer(l))  map.removeLayer(l); });
 
-    // stationLayer is only declared on the meteorological views; force it off
-    // on every other state without having to list it in each layersOff array.
-    if (state.layersOn.indexOf(stationLayer) === -1 && map.hasLayer(stationLayer)) {
-        map.removeLayer(stationLayer);
-    }
+    // These layers are only declared on specific views; force them off on every
+    // other state without having to list them in each layersOff array. This is
+    // what keeps surf spots off the meteorological + hazard maps.
+    [stationLayer, surfLayer, currentLayer].forEach(l => {
+        if (state.layersOn.indexOf(l) === -1 && map.hasLayer(l)) map.removeLayer(l);
+    });
 
     // Re-flow surf/buoy labels now that layer visibility may have changed
     // (flyTo states also re-flow on their moveend event).
@@ -1126,6 +1189,8 @@ fetchAircraft();
 fetchWind();
 fetchShips();
 fetchStations();
+fetchCurrents();
+fetchTide();
 
 Promise.all([fetchWeather(), fetchBuoys(), fetchQuakes(), fetchAlerts(), fetchAirQuality()])
     .finally(() => {
@@ -1139,4 +1204,6 @@ Promise.all([fetchWeather(), fetchBuoys(), fetchQuakes(), fetchAlerts(), fetchAi
         setInterval(fetchWind,       30 * 60 * 1000); // Open-Meteo updates hourly
         setInterval(fetchShips,           30 * 1000); // AIS positions update fast
         setInterval(fetchStations,   10 * 60 * 1000);
+        setInterval(fetchCurrents,   30 * 60 * 1000); // marine model updates slowly
+        setInterval(fetchTide,       30 * 60 * 1000);
     });

@@ -12,6 +12,37 @@ const RADIUS_NM = 250;
 let cache: { data: unknown; expiresAt: number } | null = null;
 const CACHE_MS = 60 * 1000; // 1 min — adsb.fi is generous, keep it fresh
 
+// ── Flight-route enrichment (adsbdb.com, keyless) ─────────────────────────
+// adsb.fi exposes only the callsign, not the origin/destination. adsbdb maps a
+// callsign to its scheduled route. Routes are static so we cache resolved (and
+// unresolved) callsigns indefinitely and only ever look up a bounded number of
+// NEW callsigns per refresh to stay polite to the free service.
+type RouteInfo = { origin: string | null; dest: string | null };
+const routeCache = new Map<string, RouteInfo>();
+const MAX_LOOKUPS_PER_REFRESH = 12;
+
+async function lookupRoute(callsign: string): Promise<RouteInfo> {
+  try {
+    const r = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, {
+      headers: { "User-Agent": "HonoluluCommandCenter/1.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) return { origin: null, dest: null };
+    const j = (await r.json()) as {
+      response?: { flightroute?: { origin?: { iata_code?: string }; destination?: { iata_code?: string } } };
+    };
+    const fr = j.response?.flightroute;
+    return { origin: fr?.origin?.iata_code ?? null, dest: fr?.destination?.iata_code ?? null };
+  } catch {
+    return { origin: null, dest: null };
+  }
+}
+
+// Airline-style callsign (3-letter ICAO airline + flight number), e.g. UAL930.
+function isAirlineCallsign(cs: string): boolean {
+  return /^[A-Z]{3}\d{1,4}[A-Z]?$/.test(cs);
+}
+
 type AdsbAircraft = {
   hex?: string;
   flight?: string;
@@ -62,7 +93,24 @@ router.get("/aircraft", async (req, res) => {
       })
       .filter((a) => !a.onGround);
 
-    const data = { aircraft, fetchedAt: Date.now(), dataTime: json.now ?? null };
+    // Resolve a bounded number of NOT-yet-cached airline callsigns this refresh.
+    const pending = Array.from(
+      new Set(aircraft.map((a) => a.callsign).filter((cs) => isAirlineCallsign(cs) && !routeCache.has(cs))),
+    ).slice(0, MAX_LOOKUPS_PER_REFRESH);
+    if (pending.length) {
+      const looked = await Promise.allSettled(pending.map((cs) => lookupRoute(cs)));
+      pending.forEach((cs, i) => {
+        const v = looked[i];
+        routeCache.set(cs, v.status === "fulfilled" ? v.value : { origin: null, dest: null });
+      });
+    }
+
+    const enriched = aircraft.map((a) => {
+      const route = routeCache.get(a.callsign) ?? null;
+      return { ...a, origin: route?.origin ?? null, dest: route?.dest ?? null };
+    });
+
+    const data = { aircraft: enriched, fetchedAt: Date.now(), dataTime: json.now ?? null };
     cache = { data, expiresAt: Date.now() + CACHE_MS };
     res.json(data);
   } catch (err) {

@@ -43,7 +43,7 @@ body, html {
     pointer-events: none; 
     display: flex; 
     flex-direction: column; 
-    width: 24%;
+    width: 36%;
 }
 
 .unified-dashboard {
@@ -105,10 +105,13 @@ body, html {
 }
 
 .data-list { 
-    display: flex; 
-    flex-direction: column; 
+    display: grid; 
+    grid-template-columns: 1fr 1fr; 
     gap: 6px; 
+    align-content: start;
 }
+/* A list with a single row spans both columns instead of leaving a gap */
+.data-list > .data-row:only-child { grid-column: 1 / -1; }
 
 .data-row {
     display: flex; 
@@ -349,13 +352,11 @@ body, html {
    Max 3 rows visible (3 × ~44px = 132px).
    Overflow is hidden; the JS pagination engine handles the rest.   */
 #panel-content {
-    max-height: 138px;
+    max-height: 172px;
     overflow: hidden;
 }
 
 .data-list {
-    display: flex;
-    flex-direction: column;
     gap: 5px;
 }
 
