@@ -7,8 +7,8 @@ const bounds = [[20.80, -158.45], [21.75, -156.45]];
 
 var map = L.map('map', {
     zoomControl: false, attributionControl: false,
-    minZoom: 10, maxZoom: 12, maxBounds: bounds, maxBoundsViscosity: 1.0
-}).setView([21.265, -157.785], 10);
+    minZoom: 9, maxZoom: 12, maxBounds: bounds, maxBoundsViscosity: 1.0
+}).setView([21.265, -157.785], 9);
 // Prevent all user interaction — map is display-only; programmatic flyTo still works
 map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
 map.scrollWheelZoom.disable(); map.boxZoom.disable(); map.keyboard.disable();
@@ -25,7 +25,15 @@ map.createPane('poiPane');     map.getPane('poiPane').style.zIndex     = 600;
 
 // --- BASE TILES ---
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', { maxZoom: 13 }).addTo(map);
-L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 18, className: 'blend-multiply' }).addTo(map);
+// Place/channel labels overlay. CartoDB raster labels are transparent PNGs
+// cached globally, so open-ocean tiles return EMPTY instead of the opaque grey
+// "Zoom Level Not Supported" placeholders that ESRI's World_Topo_Map and
+// World_Ocean_Reference overlays return above z9 in this region (those showed
+// up as the grey boxes scattered across the ocean).
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/dark_only_labels/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxZoom: 20, opacity: 0.92,
+    attribution: '© OpenStreetMap contributors, © CARTO'
+}).addTo(map);
 
 // --- LAYER GROUPS ---
 // Always-visible permanent layers:
@@ -42,6 +50,7 @@ var lightningLayer  = L.layerGroup();
 var aqiLayer        = L.layerGroup();
 var airLayer        = L.layerGroup();
 var shipLayer       = L.layerGroup();
+var stationLayer    = L.layerGroup();   // land weather stations (NWS) — shown on the meteorological views
 // Dense bathymetry — only added to map during Traffic Combined zoom-in
 var denseDepthLayer = L.layerGroup();
 
@@ -58,17 +67,20 @@ var trafficFlowLayer = L.tileLayer(
 //    so GIBS is the reliable SST source. Data lags ~1 day; request a recent
 //    date so a populated layer always renders.
 var _sstDate = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
-var romsLayer = L.tileLayer.wms(
-    'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi',
+// GIBS WMTS XYZ tiles (Leaflet substitutes {time}/{z}/{y}/{x}). The previous
+// WMS GetMap variant rendered nothing here; the WMTS REST endpoint is the
+// GIBS-recommended path for web maps and tiles reliably. MUR SST is published
+// at GoogleMapsCompatible_Level7, so cap native zoom at 7 and let Leaflet
+// upscale for the dashboard's closer zooms.
+var romsLayer = L.tileLayer(
+    'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/GHRSST_L4_MUR_Sea_Surface_Temperature/default/{time}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png',
     {
-        layers:      'GHRSST_L4_MUR_Sea_Surface_Temperature',
-        format:      'image/png',
-        transparent: true,
-        version:     '1.3.0',
-        time:        _sstDate,
-        opacity:     0.75,
-        pane:        'aqiPane',
-        attribution: 'NASA GIBS · GHRSST MUR SST',
+        time:         _sstDate,
+        opacity:      0.78,
+        pane:         'aqiPane',
+        maxNativeZoom: 7,
+        maxZoom:      12,
+        attribution:  'NASA GIBS · GHRSST MUR SST',
     }
 );
 
@@ -87,7 +99,11 @@ async function refreshRadar() {
         const frame = past[past.length - 1];
         const url = `${j.host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
         if (_radarTile) radarLayerGroup.removeLayer(_radarTile);
-        _radarTile = L.tileLayer(url, { pane: 'radarPane', opacity: 0.7 });
+        // RainViewer's global radar mosaic only serves up to z7 for the Hawaii
+        // region; above that it returns a "Zoom Level Not Supported" placeholder
+        // tile. Cap maxNativeZoom at 7 so Leaflet upscales the z7 frame across
+        // the map's z9–12 range instead of requesting unsupported tiles.
+        _radarTile = L.tileLayer(url, { pane: 'radarPane', opacity: 0.7, maxNativeZoom: 7, maxZoom: 13 });
         radarLayerGroup.addLayer(_radarTile);
     } catch (e) { console.warn('Radar fetch:', e); }
 }
@@ -249,6 +265,8 @@ const surfSpots = [
 ];
 
 var surfMarkers = [];
+var buoyMarkers = [];     // {marker, html} — decluttered together with surf labels
+var stationMarkers = [];  // {marker, html} — NWS land stations, decluttered too
 var surfMode = 'small';   // 'small' everywhere; 'large' only in SURF & OCEAN
 
 // Large boxed card — used only in the SURF & OCEAN wave view.
@@ -264,14 +282,16 @@ function makeSurfIconLarge(name, heightStr, color, anchor) {
         iconAnchor: anchor || [BIG_W / 2, 0]   // center-top → card hangs below the spot
     });
 }
-// Compact pin — the default for every other state.
-function makeSurfIconSmall(name, heightStr, color) {
+// Compact pin — the default for every other state. Fixed nominal size so the
+// declutterer can reason about collisions.
+const SMALL_W = 116, SMALL_H = 22;
+function makeSurfIconSmall(name, heightStr, color, anchor) {
     const ht = heightStr && heightStr !== '--' ? ` <b style="color:${color};">${heightStr}</b>` : '';
     return L.divIcon({
         className: '',
         html: `<div class="surf-pin" style="border-color:${color};">🏄 ${name}${ht}</div>`,
-        iconSize:   [0, 0],          // let content size itself
-        iconAnchor: [0, 9]           // anchor near the spot; pin grows to the right
+        iconSize:   [SMALL_W, SMALL_H],
+        iconAnchor: anchor || [SMALL_W / 2, SMALL_H / 2]   // centered on the spot
     });
 }
 function initSurfMarkers() {
@@ -288,17 +308,69 @@ function initSurfMarkers() {
 }
 initSurfMarkers();
 
-// Greedy declutter: stack overlapping large cards downward so none cover
-// another (e.g. Waimea no longer hides Pipeline on the North Shore cluster).
-function layoutLargeSurf() {
-    const GAP = 6;
+function rebuildSurfIcon(entry, anchor) {
+    if (surfMode === 'large') {
+        entry.marker.setIcon(makeSurfIconLarge(entry.spot.name, entry.heightStr, entry.color, anchor));
+    } else {
+        entry.marker.setIcon(makeSurfIconSmall(entry.spot.name, entry.heightStr, entry.color, anchor));
+    }
+}
+
+// ── Unified label declutter ───────────────────────────────────────────
+// Surf pins/cards and buoy HUD boxes compete for screen space on tight
+// clusters (the North Shore especially). Lay them out together: each label
+// stays horizontally centered on its spot and is pushed straight DOWN until it
+// no longer overlaps an already-placed label. Northernmost spots settle first.
+// Re-runs on every pan/zoom and whenever data or the surf mode changes.
+function declutterLabels() {
+    if (!map || !map._loaded) return;
+    const large = surfMode === 'large';
+    const entries = [];
+
+    surfMarkers.forEach(e => {
+        const w = large ? BIG_W : SMALL_W;
+        const h = large ? BIG_H : SMALL_H;
+        entries.push({
+            latlng: e.marker.getLatLng(), w, h,
+            offsetTop: large ? 4 : -h / 2,   // cards hang below; pins center on spot
+            apply: (ax, ay) => rebuildSurfIcon(e, [ax, ay])
+        });
+    });
+
+    if (map.hasLayer(buoyLayer)) {
+        buoyMarkers.forEach(b => {
+            const w = 130, h = 38;
+            entries.push({
+                latlng: b.marker.getLatLng(), w, h,
+                offsetTop: -h - 6,   // float above the buoy point by default
+                apply: (ax, ay) => b.marker.setIcon(
+                    L.divIcon({ className: '', html: b.html, iconSize: [w, h], iconAnchor: [ax, ay] })
+                )
+            });
+        });
+    }
+
+    if (map.hasLayer(stationLayer)) {
+        stationMarkers.forEach(s => {
+            const w = 150, h = 34;
+            entries.push({
+                latlng: s.marker.getLatLng(), w, h,
+                offsetTop: -h - 6,   // float above the station point by default
+                apply: (ax, ay) => s.marker.setIcon(
+                    L.divIcon({ className: '', html: s.html, iconSize: [w, h], iconAnchor: [ax, ay] })
+                )
+            });
+        });
+    }
+
+    const GAP = 5;
     const placed = [];
-    const order = [...surfMarkers].sort((a, b) => b.spot.c[0] - a.spot.c[0]); // N→S
-    order.forEach(entry => {
-        const pt = map.latLngToContainerPoint(entry.marker.getLatLng());
-        const rect = { x: pt.x - BIG_W / 2, y: pt.y, w: BIG_W, h: BIG_H };
+    entries.sort((a, b) => b.latlng.lat - a.latlng.lat); // N→S
+    entries.forEach(e => {
+        const pt = map.latLngToContainerPoint(e.latlng);
+        const rect = { x: pt.x - e.w / 2, y: pt.y + e.offsetTop, w: e.w, h: e.h };
         let guard = 0, moved = true;
-        while (moved && guard++ < 60) {
+        while (moved && guard++ < 80) {
             moved = false;
             for (const r of placed) {
                 if (rect.x < r.x + r.w && rect.x + rect.w > r.x &&
@@ -309,24 +381,17 @@ function layoutLargeSurf() {
             }
         }
         placed.push({ ...rect });
-        const d = rect.y - pt.y;   // pixels the card is pushed below the spot
-        entry.marker.setIcon(
-            makeSurfIconLarge(entry.spot.name, entry.heightStr, entry.color, [BIG_W / 2, -d])
-        );
+        // iconAnchor = vector from the icon's top-left to the spot point
+        e.apply(pt.x - rect.x, pt.y - rect.y);
     });
 }
-function applySurfIcons() {
-    if (surfMode === 'large') {
-        layoutLargeSurf();
-    } else {
-        surfMarkers.forEach(e =>
-            e.marker.setIcon(makeSurfIconSmall(e.spot.name, e.heightStr, e.color)));
-    }
-}
-function setSurfMode(mode) { surfMode = mode; applySurfIcons(); }
+function setSurfMode(mode) { surfMode = mode; declutterLabels(); }
+
+// Pan/zoom transitions change the pixel layout — re-flow afterwards.
+map.on('moveend zoomend', declutterLabels);
 
 function updateSurfLabels(buoys) {
-    if (!buoys) return;
+    if (!buoys) { declutterLabels(); return; }
     const byId = {};
     buoys.forEach(b => { byId[b.id] = b; });
     surfMarkers.forEach(entry => {
@@ -342,7 +407,7 @@ function updateSurfLabels(buoys) {
         entry.heightStr = heightStr;
         entry.color = color;
     });
-    applySurfIcons();
+    declutterLabels();
 }
 
 // =====================================================================
@@ -357,7 +422,7 @@ function updateSurfLabels(buoys) {
 // =====================================================================
 // LIVE DATA STORE
 // =====================================================================
-var liveData = { weather: null, buoys: null, quakes: null, alerts: null, airquality: null, aircraft: [], wind: [] };
+var liveData = { weather: null, buoys: null, quakes: null, alerts: null, airquality: null, aircraft: [], wind: [], ships: [], shipsConnected: false, stations: [] };
 
 const buoyCoords = {
     '51201': [21.673, -158.112],
@@ -394,20 +459,72 @@ async function fetchBuoys() {
         liveData.buoys = data.buoys;
 
         buoyLayer.clearLayers();
+        buoyMarkers = [];
         data.buoys.forEach(b => {
             const coords = buoyCoords[b.id];
             if (!coords || b.error) return;
             const wh = b.waveHeight != null ? `${mToFt(b.waveHeight)}ft` : '--';
             const wt = b.waterTemp  != null ? `${cToF(b.waterTemp)}°F`   : '--';
             const html = `<div class="buoy-box"><div class="buoy-name">${b.name.split(' ')[0]}</div><div class="buoy-val">🌊${wh} 🌡${wt}</div></div>`;
-            L.marker(coords, { pane: 'poiPane',
+            const marker = L.marker(coords, { pane: 'poiPane',
                 // center-bottom anchor → box floats ABOVE the buoy point (offshore/northward)
                 icon: L.divIcon({ className: '', html, iconSize: [130, 38], iconAnchor: [65, 38] })
             }).addTo(buoyLayer);
+            buoyMarkers.push({ marker, html });
         });
 
         updateSurfLabels(data.buoys);
     } catch(e) { console.warn('Buoy fetch:', e); }
+}
+
+// Live AIS vessels (AISStream via our server). Renders nothing — and the panel
+// shows an "offline" notice — until AISSTREAM_API_KEY is configured.
+async function fetchShips() {
+    try {
+        const r = await fetch('/api/ships');
+        if (!r.ok) throw new Error(r.status);
+        const data = await r.json();
+        liveData.ships = data.ships || [];
+        liveData.shipsConnected = !!data.connected;
+
+        shipLayer.clearLayers();
+        liveData.ships.forEach(v => {
+            if (v.lat == null || v.lng == null) return;
+            const rot = v.cog != null ? v.cog : (v.heading != null ? v.heading : 0);
+            const html = `<div class="ship-pin" title="${v.name}">
+                <span class="ship-arrow" style="transform:rotate(${rot}deg);">➤</span>
+                <span class="ship-name">${v.name}</span>
+            </div>`;
+            L.marker([v.lat, v.lng], { pane: 'poiPane',
+                icon: L.divIcon({ className: '', html, iconSize: [120, 18], iconAnchor: [9, 9] })
+            }).addTo(shipLayer);
+        });
+    } catch(e) { console.warn('Ship fetch:', e); }
+}
+
+// Land weather stations we pull temp/wind from (NWS). Shown on the map during
+// the meteorological views so the data's origin is visible.
+async function fetchStations() {
+    try {
+        const r = await fetch('/api/stations');
+        if (!r.ok) throw new Error(r.status);
+        const data = await r.json();
+        liveData.stations = data.stations || [];
+
+        stationLayer.clearLayers();
+        stationMarkers = [];
+        liveData.stations.forEach(s => {
+            const temp = s.tempF != null ? `${s.tempF}°` : '--';
+            const wind = s.windKt != null ? `${s.windDir || ''} ${s.windKt}kt` : 'calm';
+            const html = `<div class="wx-box"><div class="wx-name">${s.name}</div><div class="wx-val">🌡${temp} · 💨${wind}</div></div>`;
+            const marker = L.marker([s.lat, s.lng], { pane: 'poiPane',
+                // center-bottom anchor → box floats ABOVE the station point
+                icon: L.divIcon({ className: '', html, iconSize: [150, 34], iconAnchor: [75, 34] })
+            }).addTo(stationLayer);
+            stationMarkers.push({ marker, html });
+        });
+        declutterLabels();
+    } catch(e) { console.warn('Station fetch:', e); }
 }
 
 async function fetchQuakes() {
@@ -602,7 +719,10 @@ function getAviationItems() {
         const isHelo = (a.altFt != null && a.altFt < 3000) || (a.speedKt != null && a.speedKt < 120 && a.altFt < 5000);
         const alt    = a.altFt  != null ? `${Math.round(a.altFt / 100) * 100}ft` : '--';
         const spd    = a.speedKt != null ? `${a.speedKt} kts` : '--';
-        return { call: a.callsign, type: isHelo ? '🚁' : '✈️', route: a.country, alt, spd };
+        const route  = a.registration
+            ? `${a.registration}${a.acType ? ' · ' + a.acType : ''}`
+            : (a.acType || a.icao24 || '—');
+        return { call: a.callsign, type: isHelo ? '🚁' : '✈️', route, alt, spd };
     });
     if (real.length) return real;
     return [
@@ -623,14 +743,41 @@ function renderAviationItem(item) {
     </div>`;
 }
 
-// ── COMBINED TRAFFIC items (air only until AIS connected)
+// AIS ship-type code → human label (ITU-R M.1371 first-digit classes).
+function shipTypeLabel(t) {
+    if (t == null) return 'Vessel';
+    if (t === 30) return 'Fishing';
+    if (t === 35) return 'Military';
+    if (t === 36) return 'Sailing';
+    if (t === 37) return 'Pleasure craft';
+    if (t === 50) return 'Pilot';
+    if (t === 51) return 'Search & rescue';
+    if (t === 52) return 'Tug';
+    if (t === 55) return 'Law enforcement';
+    if (t >= 60 && t <= 69) return 'Passenger';
+    if (t >= 70 && t <= 79) return 'Cargo';
+    if (t >= 80 && t <= 89) return 'Tanker';
+    return 'Vessel';
+}
+
+// ── COMBINED TRAFFIC items (aircraft + live AIS vessels) ──────────────
 function getTrafficItems() {
     const items = [];
-    getAviationItems().slice(0, 6).forEach(a =>
+    getAviationItems().slice(0, 4).forEach(a =>
         items.push({ icon: a.type, name: a.call, detail: `${a.alt}`, sub: a.route,
                      color: a.type === '🚁' ? '#ffd32a' : '#1dd1a1' }));
-    // Placeholder until AIS feed available
-    items.push({ icon: '⚓', name: 'AIS OFFLINE', detail: '–', sub: 'No vessel data · SDR receiver needed', color: '#636e72' });
+    const ships = (liveData.ships || [])
+        .slice().sort((a, b) => (b.sog || 0) - (a.sog || 0)).slice(0, 4);
+    if (ships.length) {
+        ships.forEach(v => items.push({
+            icon: '🚢', name: v.name,
+            detail: v.sog != null ? `${v.sog.toFixed(1)} kt` : '--',
+            sub: shipTypeLabel(v.type), color: '#0984e3'
+        }));
+    } else {
+        items.push({ icon: '⚓', name: 'AIS OFFLINE', detail: '–',
+            sub: 'Set AISSTREAM_API_KEY for live vessels', color: '#636e72' });
+    }
     return items;
 }
 function renderTrafficItem(item) {
@@ -641,14 +788,22 @@ function renderTrafficItem(item) {
 }
 
 function getShipItems() {
-    // No live AIS feed — MarineTraffic API key or on-site SDR receiver needed
-    return [{ noAis: true }];
+    const ships = liveData.ships || [];
+    if (!ships.length) return [{ noAis: true }];
+    return ships
+        .slice().sort((a, b) => (b.sog || 0) - (a.sog || 0)).slice(0, 12)
+        .map(v => ({
+            name: v.name,
+            type: shipTypeLabel(v.type),
+            area: v.dest ? `→ ${v.dest}` : 'Hawaiian waters',
+            spd: v.sog != null ? `${v.sog.toFixed(1)} kt` : '--'
+        }));
 }
 function renderShipItem(item) {
     if (item.noAis) return `<div class="data-row" style="border-left-color:#636e72;">
         <div>
-            <div class="row-primary" style="color:#636e72;">⚠ No AIS Feed Connected</div>
-            <div class="row-secondary">Requires MarineTraffic API key or on-site SDR-AIS receiver</div>
+            <div class="row-primary" style="color:#636e72;">⚓ No Live Vessels</div>
+            <div class="row-secondary">Set AISSTREAM_API_KEY to stream live AIS traffic</div>
         </div>
         <div class="row-meta" style="color:#636e72;">OFFLINE</div>
     </div>`;
@@ -688,7 +843,7 @@ const uiStates = [
     // ── 0: METEOROLOGICAL — NWS DOPPLER RADAR ────────────────────────
     {
         title: "METEOROLOGICAL", sub: "LIVE NWS DOPPLER", duration: 6000,
-        layersOn:  [radarLayerGroup],
+        layersOn:  [radarLayerGroup, stationLayer],
         layersOff: [windLayer, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
             const w = liveData.weather;
@@ -709,7 +864,7 @@ const uiStates = [
     // ── 1: METEOROLOGICAL — SURFACE WIND MATRIX (live Open-Meteo) ────
     {
         title: "METEOROLOGICAL", sub: "SURFACE WIND MATRIX", duration: 6000,
-        layersOn:  [windLayer],
+        layersOn:  [windLayer, stationLayer],
         layersOff: [radarLayerGroup, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
             const pts = liveData.wind;
@@ -911,6 +1066,16 @@ function transitionState() {
     state.layersOn.forEach(l  => { if (!map.hasLayer(l)) map.addLayer(l); });
     state.layersOff.forEach(l => { if (map.hasLayer(l))  map.removeLayer(l); });
 
+    // stationLayer is only declared on the meteorological views; force it off
+    // on every other state without having to list it in each layersOff array.
+    if (state.layersOn.indexOf(stationLayer) === -1 && map.hasLayer(stationLayer)) {
+        map.removeLayer(stationLayer);
+    }
+
+    // Re-flow surf/buoy labels now that layer visibility may have changed
+    // (flyTo states also re-flow on their moveend event).
+    declutterLabels();
+
     // Header labels
     document.getElementById('tab-title').innerText     = state.title;
     document.getElementById('sub-indicator').innerText = state.sub;
@@ -959,6 +1124,8 @@ function transitionState() {
 // Non-blocking fetches (slow/rate-limited APIs — don't hold up the boot)
 fetchAircraft();
 fetchWind();
+fetchShips();
+fetchStations();
 
 Promise.all([fetchWeather(), fetchBuoys(), fetchQuakes(), fetchAlerts(), fetchAirQuality()])
     .finally(() => {
@@ -970,4 +1137,6 @@ Promise.all([fetchWeather(), fetchBuoys(), fetchQuakes(), fetchAlerts(), fetchAi
         setInterval(fetchAirQuality, 15 * 60 * 1000);
         setInterval(fetchAircraft,   10 * 60 * 1000);
         setInterval(fetchWind,       30 * 60 * 1000); // Open-Meteo updates hourly
+        setInterval(fetchShips,           30 * 1000); // AIS positions update fast
+        setInterval(fetchStations,   10 * 60 * 1000);
     });

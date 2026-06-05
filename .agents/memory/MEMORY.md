@@ -1,0 +1,1 @@
+- [Tile placeholder gray boxes](tile-placeholders.md) — external tile servers return opaque "Zoom Level Not Supported" PNGs (HTTP 200) above their max native zoom; detect by md5, fix with Leaflet maxNativeZoom.
