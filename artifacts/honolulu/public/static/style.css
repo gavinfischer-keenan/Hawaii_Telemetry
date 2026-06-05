@@ -516,6 +516,16 @@ body, html {
     font-family: monospace;
 }
 
+/* ── DERIVED WIND FIELD ───────────────────────────────────────────── */
+/* Inner glyph is rotated per-arrow to render a smooth, curling flow field. */
+.wind-glyph {
+    display: inline-block;
+    line-height: 1;
+}
+
+/* Meteorological page: hide the bottom-left data panel — the map is the readout. */
+#main-dash.hud-hidden { display: none !important; }
+
 /* ── HAZARD MONITOR / ROMS LEGEND ─────────────────────────────────── */
 .hazard-legend {
     padding: 4px 2px;

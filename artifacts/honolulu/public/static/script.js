@@ -37,7 +37,6 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/dark_only_labels/{z}/
 
 // --- LAYER GROUPS ---
 // Always-visible permanent layers:
-var depthLayer      = L.layerGroup().addTo(map);
 var surfLayer       = L.layerGroup();   // only shown on the SURF & OCEAN view
 var staticPoiLayer  = L.layerGroup().addTo(map);
 // Panel-toggled layers:
@@ -63,31 +62,6 @@ var denseDepthLayer = L.layerGroup();
 //     '/api/traffic/{z}/{x}/{y}',
 //     { pane: 'trafficPane', opacity: 0.85, maxZoom: 18 }
 // );
-
-// ── NASA GIBS — GHRSST MUR Sea Surface Temperature (keyless global WMS).
-//    Daily 1 km L4 analysis. PacIOOS THREDDS is unreachable from this host,
-//    so GIBS is the reliable SST source. Data lags ~1 day; request a recent
-//    date so a populated layer always renders.
-// GIBS publishes MUR SST with a lag: tiles for the last ~2 days come back EMPTY
-// (transparent placeholders), so the layer rendered nothing. 3 days back always
-// has a populated global analysis.
-var _sstDate = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
-// GIBS WMTS XYZ tiles (Leaflet substitutes {time}/{z}/{y}/{x}). The previous
-// WMS GetMap variant rendered nothing here; the WMTS REST endpoint is the
-// GIBS-recommended path for web maps and tiles reliably. MUR SST is published
-// at GoogleMapsCompatible_Level7, so cap native zoom at 7 and let Leaflet
-// upscale for the dashboard's closer zooms.
-var romsLayer = L.tileLayer(
-    'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/GHRSST_L4_MUR_Sea_Surface_Temperature/default/{time}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png',
-    {
-        time:         _sstDate,
-        opacity:      0.78,
-        pane:         'aqiPane',
-        maxNativeZoom: 7,
-        maxZoom:      12,
-        attribution:  'NASA GIBS · GHRSST MUR SST',
-    }
-);
 
 // --- LIVE RADAR: RainViewer global mosaic (~10-min updates) ---
 // The US IEM NEXRAD mosaic (nexrad-n0q) is CONUS-only and has NO Hawaii
@@ -123,15 +97,21 @@ function makeSeededRng(seed) {
 const rng = makeSeededRng(0xABCDEF42);
 
 // --- LAND MASK — polygon outlines per island so depth soundings never fall on
-// land. Rectangles missed the irregular north coasts and ignored Lanai / West
-// Maui entirely (depths landed on those islands). Outlines are rough and may
-// over-approximate inland slightly — harmless, since only the scatter is masked;
-// curated shallow-bay soundings are added unconditionally and always remain. ---
+// land. The Oahu outline traces the real coastline closely (north shore curve,
+// Kaneohe Bay, the Mokapu peninsula, Kailua, and the Pearl Harbor concavity) so
+// the land check (isOnLand) and the offshore distance gradient (distToShoreKm)
+// are accurate enough to drive both the dense bathymetry mask and the wind flow
+// field's deflection around the islands. Other islands are rougher. ---
 const ISLAND_POLYS = [
-    // Oahu
-    [[21.575,-158.28],[21.59,-158.10],[21.68,-158.04],[21.71,-157.99],
-     [21.65,-157.92],[21.45,-157.79],[21.31,-157.65],[21.27,-157.69],
-     [21.26,-157.80],[21.30,-158.00],[21.30,-158.11],[21.44,-158.19]],
+    // Oahu (clockwise from Kaena Point)
+    [[21.575,-158.281],[21.585,-158.200],[21.591,-158.108],[21.640,-158.060],
+     [21.678,-158.040],[21.710,-157.995],[21.648,-157.922],[21.555,-157.875],
+     [21.519,-157.838],[21.480,-157.852],[21.420,-157.810],[21.460,-157.726],
+     [21.400,-157.739],[21.370,-157.700],[21.335,-157.695],[21.310,-157.650],
+     [21.268,-157.700],[21.272,-157.760],[21.252,-157.805],[21.282,-157.845],
+     [21.300,-157.875],[21.318,-157.960],[21.360,-157.960],[21.330,-157.990],
+     [21.300,-158.020],[21.297,-158.103],[21.335,-158.122],[21.390,-158.150],
+     [21.443,-158.190],[21.470,-158.220],[21.540,-158.255]],
     // Molokai
     [[21.21,-157.26],[21.21,-157.00],[21.17,-156.71],[21.12,-156.74],
      [21.06,-157.00],[21.08,-157.22]],
@@ -157,89 +137,33 @@ function isOnLand(lat, lng) {
     for (const poly of ISLAND_POLYS) if (pointInPoly(lat, lng, poly)) return true;
     return false;
 }
-
-// =====================================================================
-// DEPTH SOUNDINGS
-// =====================================================================
-const curatedDepths = [
-    // North of Oahu — fill in the blank area north of the island
-    { c: [21.730, -158.200], d: "1760" }, { c: [21.742, -158.050], d: "1640" },
-    { c: [21.748, -157.920], d: "1590" }, { c: [21.735, -157.800], d: "1560" },
-    { c: [21.741, -157.680], d: "1490" }, { c: [21.728, -157.560], d: "1430" },
-    { c: [21.738, -157.440], d: "1370" }, { c: [21.745, -157.320], d: "1310" },
-    { c: [21.750, -157.200], d: "1250" }, { c: [21.738, -157.080], d: "1180" },
-    { c: [21.730, -156.960], d: "1110" }, { c: [21.742, -156.840], d: "1060" },
-    { c: [21.748, -156.720], d: "1010" }, { c: [21.735, -156.600] ,d: "960"  },
-    { c: [21.720, -156.500], d: "920"  },
-    // Kaiwi Channel (between Oahu and Molokai) — fill this gap
-    { c: [21.200, -157.640], d: "1420" }, { c: [21.160, -157.700], d: "1380" },
-    { c: [21.180, -157.760], d: "1310" }, { c: [21.140, -157.820], d: "1270" },
-    { c: [21.120, -157.870], d: "1240" }, { c: [21.230, -157.580], d: "1480" },
-    { c: [21.105, -157.920], d: "1200" }, { c: [21.145, -157.950], d: "1190" },
-    // Between Molokai & Maui — Pailolo Channel
-    { c: [21.050, -156.990], d: "430"  }, { c: [21.040, -156.960], d: "520"  },
-    { c: [21.060, -156.930], d: "380"  }, { c: [21.030, -157.020], d: "610"  },
-    { c: [21.045, -156.870], d: "340"  }, { c: [21.025, -156.840], d: "290"  },
-    // Kaneohe Bay & Kailua area
-    { c: [21.46, -157.82], d: "14"   }, { c: [21.43, -157.78], d: "45"  },
-    { c: [21.41, -157.73], d: "35"   }, { c: [21.38, -157.75], d: "28"  },
-    { c: [21.44, -157.80], d: "20"   }, { c: [21.50, -157.86], d: "12"  },
-    // Pearl Harbor approach & Honolulu south shore
-    { c: [21.30, -157.98], d: "15"   }, { c: [21.26, -157.94], d: "65"  },
-    { c: [21.260,-157.845], d: "18"  }, { c: [21.242,-157.820], d: "65"  },
-    { c: [21.230,-157.720], d: "210" }, { c: [21.215,-157.860], d: "30"  },
-    { c: [21.245,-157.900], d: "48"  }, { c: [21.270,-157.950], d: "32"  },
-    // Waianae (west) coast
-    { c: [21.43, -158.22], d: "75"   }, { c: [21.33, -158.15], d: "85"  },
-    { c: [21.28, -158.13], d: "120"  }, { c: [21.38, -158.20], d: "95"  },
-    { c: [21.23, -158.10], d: "140"  }, { c: [21.48, -158.25], d: "60"  },
-    // North Shore / Haleiwa offshore
-    { c: [21.62, -158.13], d: "80"   }, { c: [21.64, -158.07], d: "45"  },
-    { c: [21.68, -158.05], d: "110"  }, { c: [21.66, -158.10], d: "62"  },
-    { c: [21.70, -158.03], d: "90"   }, { c: [21.60, -158.05], d: "55"  },
-    { c: [21.72, -158.08], d: "130"  }, { c: [21.58, -157.98], d: "72"  },
-    // Molokai south reef and shelf
-    { c: [21.07, -157.20], d: "22"   }, { c: [21.06, -157.10], d: "18"  },
-    { c: [21.06, -156.90], d: "25"   }, { c: [21.05, -157.28], d: "65"  },
-    { c: [21.03, -157.15], d: "90"   }, { c: [21.08, -157.00], d: "35"  },
-    { c: [21.07, -156.95], d: "28"   }, { c: [21.09, -157.25], d: "42"  },
-    // Molokai Halawa / north side
-    { c: [21.160,-156.710], d: "85"  }, { c: [21.180,-156.750], d: "120" },
-    { c: [21.200,-156.800], d: "240" }, { c: [21.170,-156.730], d: "105" },
-    { c: [21.190,-156.770], d: "180" },
-    // Deep channel slopes south of Oahu
-    { c: [21.185,-157.840], d: "510" }, { c: [21.225,-157.695], d: "310" },
-    { c: [21.190,-157.640], d: "590" }, { c: [21.200,-157.750], d: "420" },
-    { c: [21.210,-157.680], d: "380" },
-    // Open water south of Molokai
-    { c: [20.950,-157.250], d: "55"  }, { c: [20.900,-157.300], d: "62"  },
-    { c: [21.000,-157.150], d: "95"  }, { c: [20.970,-157.180], d: "78"  },
-    { c: [20.920,-157.270], d: "68"  },
-];
-curatedDepths.forEach(s => {
-    L.marker(s.c, { pane: 'depthPane',
-        icon: L.divIcon({ className: 'depth-label', html: s.d, iconSize: [40, 15] })
-    }).addTo(depthLayer);
-});
-
-// Seeded scatter — everywhere that is NOT land (covers north, channels, open ocean)
-for (let lat = bounds[0][0]; lat <= bounds[1][0]; lat += 0.07) {
-    for (let lng = bounds[0][1]; lng <= bounds[1][1]; lng += 0.10) {
-        if (!isOnLand(lat, lng)) {
-            const jLat = lat + (rng() - 0.5) * 0.04;
-            const jLng = lng + (rng() - 0.5) * 0.06;
-            const dist = Math.hypot(21.26 - jLat, -157.78 - jLng);
-            const isChannel = (jLat > 21.05 && jLat < 21.28 && jLng > -157.95 && jLng < -157.58);
-            let depth = Math.floor(isChannel
-                ? 800 + dist * 700  + (rng() - 0.5) * 150
-                : 900 + dist * 1400 + (rng() - 0.5) * 180);
-            L.marker([jLat, jLng], {
-                pane: 'depthPane',
-                icon: L.divIcon({ className: 'depth-label', html: String(depth), iconSize: [40, 15] })
-            }).addTo(depthLayer);
+// Approx km from a point to a segment, using a local equirectangular plane
+// (1° lat ≈ 111 km, 1° lng ≈ 102 km at ~21°N).
+function _segKm(lat, lng, a, b) {
+    const KX = 102, KY = 111;
+    const px = lng * KX, py = lat * KY;
+    const ax = a[1] * KX, ay = a[0] * KY;
+    const bx = b[1] * KX, by = b[0] * KY;
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy || 1e-9;
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const cx = ax + t * dx, cy = ay + t * dy;
+    return Math.hypot(px - cx, py - cy);
+}
+// Shortest distance (km) from a point to the nearest island coastline. Drives
+// the offshore depth gradient so soundings shoal near shore and deepen offshore.
+function distToShoreKm(lat, lng) {
+    let min = Infinity;
+    for (const poly of ISLAND_POLYS) {
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const d = _segKm(lat, lng, poly[j], poly[i]);
+            if (d < min) min = d;
         }
     }
+    return min;
 }
+
 
 // =====================================================================
 // DENSE BATHYMETRY — zoomed south-Oahu traffic view (~zoom 12)
@@ -672,6 +596,70 @@ async function fetchAircraft() {
     }
 }
 
+// =====================================================================
+// DERIVED WIND FIELD — a coherent flow whose arrows curl around the islands.
+// Ambient direction/speed come from the live Open-Meteo points (vector-averaged);
+// within ~9 km of a coastline the vector is bent tangent to shore so the flow
+// wraps the land instead of blowing through it. Falls back to ENE trades.
+// =====================================================================
+function ambientWind() {
+    const pts = liveData.wind || [];
+    if (!pts.length) return { toBearing: 250, speedKt: 16 }; // ENE trades → WSW
+    let sx = 0, sy = 0, sp = 0;
+    pts.forEach(p => {
+        const f = (p.direction ?? 70) * Math.PI / 180;  // meteorological 'from'
+        sx += Math.sin(f); sy += Math.cos(f); sp += (p.speedKt ?? 16);
+    });
+    const fromB = (Math.atan2(sx, sy) * 180 / Math.PI + 360) % 360;
+    return { toBearing: (fromB + 180) % 360, speedKt: Math.round(sp / pts.length) };
+}
+// Unit vector (east, north) pointing away from the nearest land.
+function offshoreDir(lat, lng) {
+    const e = 0.02;
+    const gE = distToShoreKm(lat, lng + e) - distToShoreKm(lat, lng - e);
+    const gN = distToShoreKm(lat + e, lng) - distToShoreKm(lat - e, lng);
+    const m = Math.hypot(gE, gN) || 1e-9;
+    return { x: gE / m, y: gN / m };
+}
+// Flow direction (unit east/north) at a point: the ambient trade vector, bent to
+// run along the coast within ~9 km of shore so it curls around each island.
+function flowAt(lat, lng, amb) {
+    const b = amb.toBearing * Math.PI / 180;
+    let vx = Math.sin(b), vy = Math.cos(b);            // ambient 'to' vector
+    const dist = distToShoreKm(lat, lng);
+    const off  = offshoreDir(lat, lng);
+    const lx = -off.x, ly = -off.y;                    // toward land
+    const into = vx * lx + vy * ly;                    // >0 = blowing onto land
+    const w = Math.max(0, 1 - dist / 9);               // proximity weight
+    if (into > 0 && w > 0) {
+        vx -= 1.15 * w * into * lx;                    // cancel the onshore part
+        vy -= 1.15 * w * into * ly;
+        let tx = -off.y, ty = off.x;                   // tangent to the coast
+        if (vx * tx + vy * ty < 0) { tx = -tx; ty = -ty; }
+        vx += 0.5 * w * tx;                            // add curl along the shore
+        vy += 0.5 * w * ty;
+    }
+    const m = Math.hypot(vx, vy) || 1e-9;
+    return { x: vx / m, y: vy / m };
+}
+// Rebuild the windLayer as a regular grid of arrows over open water.
+function buildWindField() {
+    windLayer.clearLayers();
+    const amb = ambientWind();
+    for (let lat = bounds[0][0] + 0.04; lat <= bounds[1][0]; lat += 0.07) {
+        for (let lng = bounds[0][1] + 0.04; lng <= bounds[1][1]; lng += 0.085) {
+            if (isOnLand(lat, lng)) continue;
+            const f = flowAt(lat, lng, amb);
+            // CSS rotate is clockwise from east (+x); screen y is inverted.
+            const angle = (Math.atan2(-f.y, f.x) * 180 / Math.PI).toFixed(0);
+            const html = `<span class="wind-glyph" style="transform:rotate(${angle}deg);">→</span>`;
+            L.marker([lat, lng], { pane: 'windPane',
+                icon: L.divIcon({ className: 'vector-arrow', html, iconSize: [30, 30], iconAnchor: [15, 15] })
+            }).addTo(windLayer);
+        }
+    }
+}
+
 // ─── Live wind from Open-Meteo via /api/wind (30-min cache on server)
 async function fetchWind() {
     try {
@@ -680,16 +668,11 @@ async function fetchWind() {
         const data = await r.json();
         liveData.wind = data.points || [];
 
-        windLayer.clearLayers();
-        liveData.wind.forEach(pt => {
-            // Wind points are curated named locations (surf spots, channels,
-            // coastal towns) — do NOT land-filter them or nearly all vanish.
-            const html = `${pt.arrow}<br><span style="font-size:10px;color:#00ffcc;">${pt.speedKt}</span>`;
-            L.marker([pt.lat, pt.lng], { pane: 'windPane',
-                icon: L.divIcon({ className: 'vector-arrow', html, iconSize: [40, 42] })
-            }).addTo(windLayer);
-        });
-    } catch(e) { console.warn('Wind fetch:', e); }
+        buildWindField();
+    } catch(e) {
+        console.warn('Wind fetch:', e);
+        buildWindField();   // still draw the field from the ENE trade-wind fallback
+    }
 }
 
 // ─── Ocean surface currents (Open-Meteo Marine model via /api/currents)
@@ -907,56 +890,24 @@ function renderAqiItem(item) {
 // UI STATE MACHINE
 // =====================================================================
 const uiStates = [
-    // ── 0: METEOROLOGICAL — NWS DOPPLER RADAR ────────────────────────
+    // ── 0: METEOROLOGICAL — STATIONS + DERIVED WIND FIELD ─────────────
+    // One unified weather view: NWS Doppler radar backdrop, a uniform box at
+    // every reporting station (Oahu + neighbour islands), and a derived wind
+    // flow field whose arrows curl around the islands. No bottom-left data
+    // panel here — the map itself is the readout.
     {
-        title: "METEOROLOGICAL", sub: "LIVE NWS DOPPLER", duration: 6000,
-        layersOn:  [radarLayerGroup, stationLayer],
-        layersOff: [windLayer, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
-        renderStatic() {
-            const w = liveData.weather;
-            if (!w) return `<div class="data-row"><div class="row-primary">Loading NWS data…</div></div>`;
-            return `
-                <div class="metric-grid">
-                    <div class="metric-box"><div class="metric-val">${w.tempF}°F</div><div class="metric-lbl">${w.location}</div></div>
-                    <div class="metric-box"><div class="metric-val">${w.humidity != null ? w.humidity+'%' : '--'}</div><div class="metric-lbl">Humidity</div></div>
-                    <div class="metric-box"><div class="metric-val">${w.windDirection} ${w.windSpeed}</div><div class="metric-lbl">Wind</div></div>
-                    <div class="metric-box"><div class="metric-val">${w.precipChance != null ? w.precipChance+'%' : '--'}</div><div class="metric-lbl">Precip</div></div>
-                </div>
-                <div class="data-row" style="margin-top:6px;border-left-color:#48dbfb;">
-                    <div><div class="row-primary">${w.shortForecast}</div><div class="row-secondary">NWS Honolulu — ${new Date(w.fetchedAt).toLocaleTimeString()}</div></div>
-                    <div class="row-meta" style="color:#2ecc71;">LIVE</div>
-                </div>`;
-        }
-    },
-    // ── 1: METEOROLOGICAL — SURFACE WIND MATRIX (live Open-Meteo) ────
-    {
-        title: "METEOROLOGICAL", sub: "SURFACE WIND MATRIX", duration: 6000,
-        layersOn:  [windLayer, stationLayer],
-        layersOff: [radarLayerGroup, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
-        renderStatic() {
-            const pts = liveData.wind;
-            if (!pts || !pts.length) return `<div class="data-row"><div class="row-primary">Loading wind data…</div></div>`;
-            // Summarise: pick 3 representative points
-            const show = [
-                pts.find(p => p.name === 'Honolulu')     || pts[0],
-                pts.find(p => p.name === 'North Shore')  || pts[2],
-                pts.find(p => p.name === 'Kaiwi Channel')|| pts[5],
-            ].filter(Boolean);
-            const rows = show.map(p => {
-                const color = p.speedKt >= 25 ? '#ff9f43' : p.speedKt >= 15 ? '#00ffcc' : '#48dbfb';
-                return `<div class="data-row" style="border-left-color:${color};">
-                    <div><div class="row-primary">${p.arrow} ${p.name}</div><div class="row-secondary">Open-Meteo · 10m anemometer</div></div>
-                    <div class="row-meta" style="color:${color};">${p.speedKt} kt</div>
-                </div>`;
-            }).join('');
-            return `<div class="data-list">${rows}</div>`;
-        }
+        title: "METEOROLOGICAL", sub: "NWS RADAR · STATIONS · DERIVED WIND", duration: 9000,
+        layersOn:  [radarLayerGroup, windLayer, stationLayer],
+        layersOff: [aqiLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        renderStatic: () => '',
+        onEnter() { document.getElementById('main-dash').classList.add('hud-hidden'); },
+        onExit()  { document.getElementById('main-dash').classList.remove('hud-hidden'); }
     },
     // ── 2: SURF & OCEAN — combined surf cards + buoy HUDs ────────────
     {
         title: "SURF & OCEAN", sub: "NDBC · WAVE + BUOY + CURRENTS", duration: 9000,
         layersOn:  [buoyLayer, surfLayer, currentLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
         renderStatic() {
             const buoys  = liveData.buoys || [];
             const active = buoys.filter(b => !b.error && b.waveHeight != null);
@@ -1013,60 +964,32 @@ const uiStates = [
         onEnter() { setSurfMode('large'); },   // big boxed cards + declutter
         onExit()  { setSurfMode('small'); }    // compact pins everywhere else
     },
-    // ── 4: SEA SURFACE TEMP — NASA GIBS MUR ──────────────────────────
-    {
-        title: "SEA SURFACE TEMP", sub: "NASA GIBS · GHRSST MUR", duration: 8000,
-        layersOn:  [romsLayer, buoyLayer],
-        layersOff: [radarLayerGroup, windLayer, aqiLayer, airLayer, shipLayer, quakeLayer, lightningLayer, denseDepthLayer],
-        renderStatic() {
-            return `<div class="hazard-legend">
-                <div class="legend-title">SEA SURFACE TEMPERATURE</div>
-                <div class="legend-section">
-                    <div style="background:linear-gradient(to right,#0000ff,#00ffff,#00ff00,#ffff00,#ff0000);
-                                height:12px;border-radius:3px;margin:4px 0;"></div>
-                    <div style="display:flex;justify-content:space-between;font-size:10px;color:#a4b0be;">
-                        <span>22°C</span><span>24°C</span><span>26°C</span><span>28°C</span><span>30°C</span>
-                    </div>
-                </div>
-                <div class="data-row" style="border-left-color:#48dbfb;margin-top:6px;">
-                    <div><div class="row-primary">GHRSST MUR L4</div>
-                    <div class="row-secondary">NASA GIBS · 1 km global SST analysis</div></div>
-                    <div class="row-meta" style="color:#2ecc71;">LIVE</div>
-                </div>
-                <div class="data-row" style="border-left-color:#74b9ff;">
-                    <div><div class="row-primary">Daily Analysis</div>
-                    <div class="row-secondary">Multi-sensor blended · ~1-day latency</div></div>
-                    <div class="row-meta">WMS</div>
-                </div>
-            </div>`;
-        }
-    },
-    // ── 5: AIR QUALITY — Open-Meteo US AQI (multi-point) ─────────────
+    // ── AIR QUALITY — Open-Meteo US AQI (multi-point) ─────────────
     {
         title: "AIR QUALITY", sub: "US AQI · OPEN-METEO", perPageMs: 4000,
         layersOn:  [aqiLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, airLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getAqiItems, renderItem: renderAqiItem
     },
     // ── 6: TRAFFIC — AVIATION ─────────────────────────────────────────
     {
         title: "TRAFFIC — AVIATION", sub: "FLIGHT VECTOR LOG", perPageMs: 3500,
         layersOn:  [airLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, aqiLayer, shipLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getAviationItems, renderItem: renderAviationItem
     },
     // ── 7: TRAFFIC — MARITIME ─────────────────────────────────────────
     {
         title: "TRAFFIC — MARITIME", sub: "VESSEL TRACKING LOG", perPageMs: 3500,
         layersOn:  [shipLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, airLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, aqiLayer, airLayer, buoyLayer, quakeLayer, lightningLayer, denseDepthLayer],
         getItems: getShipItems, renderItem: renderShipItem
     },
     // ── 8: TRAFFIC — COMBINED (harbor approach zoom-in) ───────────────
     {
         title: "TRAFFIC — COMBINED", sub: "HONOLULU HARBOR APPROACH", perPageMs: 3500,
         layersOn:  [airLayer, shipLayer, denseDepthLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, buoyLayer, quakeLayer, lightningLayer],
+        layersOff: [radarLayerGroup, windLayer, aqiLayer, buoyLayer, quakeLayer, lightningLayer],
         getItems: getTrafficItems, renderItem: renderTrafficItem,
         holdExtraMs: 3000,   // linger on the last page so the zoom is appreciated
         onEnter() {
@@ -1084,7 +1007,7 @@ const uiStates = [
     {
         title: "HAZARD MONITOR", sub: "SEISMIC · LIGHTNING · ALERTS", duration: 10000,
         layersOn:  [quakeLayer, lightningLayer],
-        layersOff: [radarLayerGroup, windLayer, romsLayer, aqiLayer, airLayer, shipLayer, buoyLayer, denseDepthLayer],
+        layersOff: [radarLayerGroup, windLayer, aqiLayer, airLayer, shipLayer, buoyLayer, denseDepthLayer],
         onEnter() {
             // Pull back to frame the whole chain — quakes cluster on the Big
             // Island (~19°N), well south of the default Oahu-only view. The
@@ -1092,9 +1015,6 @@ const uiStates = [
             // every Big-Island quake; relax both so the markers actually frame in.
             map.setMinZoom(7);
             map.setMaxBounds(null);
-            // Depth soundings are meaningless at this scale and just clutter the
-            // ocean — hide the (otherwise permanent) base soundings on hazard.
-            if (map.hasLayer(depthLayer)) map.removeLayer(depthLayer);
             map.flyToBounds([[18.7, -156.0], [21.9, -158.3]], {
                 animate: true, duration: 1.8, padding: [30, 30]
             });
@@ -1103,7 +1023,6 @@ const uiStates = [
             // Restore the Oahu-only lock + base soundings before returning.
             map.setMaxBounds(bounds);
             map.setMinZoom(9);
-            if (!map.hasLayer(depthLayer)) map.addLayer(depthLayer);
             map.flyTo([21.265, -157.785], 10, { animate: true, duration: 1.5 });
         },
         renderStatic() {
@@ -1221,6 +1140,7 @@ function transitionState() {
 // =====================================================================
 // Non-blocking fetches (slow/rate-limited APIs — don't hold up the boot)
 fetchAircraft();
+buildWindField();   // immediate field from ENE fallback; fetchWind refines it
 fetchWind();
 fetchShips();
 fetchStations();

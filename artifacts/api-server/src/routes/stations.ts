@@ -11,6 +11,8 @@ const STATIONS: Array<{ id: string; name: string; lat: number; lng: number }> = 
   { id: "PHJR", name: "Kalaeloa", lat: 21.3074, lng: -158.07 },
   { id: "PHHI", name: "Wheeler AAF", lat: 21.4835, lng: -158.0397 },
   { id: "PHMK", name: "Molokai (MKK)", lat: 21.1529, lng: -157.0964 },
+  { id: "PHJH", name: "West Maui (JHM)", lat: 20.9629, lng: -156.6739 },
+  { id: "PHNY", name: "Lanai (LNY)", lat: 20.7856, lng: -156.9514 },
 ];
 
 let cache: { data: unknown; expiresAt: number } | null = null;
