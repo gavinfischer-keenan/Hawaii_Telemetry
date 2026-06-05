@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Honolulu Command Center</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="viewport-scaler">
+        <div id="map"></div>
+        <div id="overlay-container">
+            <div class="unified-dashboard" id="main-dash">
+                <div class="dashboard-header">
+                    <span id="tab-title">LOADING...</span>
+                    <span id="sub-indicator" style="font-size: 0.6em; color: #888;">SYS INIT</span>
+                </div>
+                <div id="panel-content"></div>
+            </div>
+        </div>
+    </div>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="/static/script.js"></script>
+</body>
+</html>
